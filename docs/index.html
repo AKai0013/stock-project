@@ -26,6 +26,7 @@
         <button class="nav-link" data-view="setup">蓄勢待發</button>
         <button class="nav-link" data-view="reversal">反轉雷達</button>
         <button class="nav-link" data-view="funds">法人排行榜</button>
+        <button class="nav-link" data-view="strong">主力＋趨勢</button>
       </nav>
 
       <div class="sidebar-footer">
@@ -41,7 +42,7 @@
       <header class="topbar">
         <div>
           <h1>台股研究中心</h1>
-          <p class="subtitle">市場掃描 → 策略分類 → 法人觀察</p>
+          <p class="subtitle">市場掃描 → 策略分類 → 法人觀察 → 主力交集</p>
         </div>
         <div class="topbar-actions">
           <button id="refreshBtn" class="btn btn-primary">重新載入資料</button>
@@ -203,6 +204,16 @@
             </div>
             <div id="tableInvest"></div>
           </div>
+        </div>
+      </section>
+
+      <section id="view-strong" class="view">
+        <div class="card">
+          <div class="card-header">
+            <h2>主力＋趨勢</h2>
+            <p>外資買超 / 投信買超 與 趨勢穩健交集</p>
+          </div>
+          <div id="tableStrong"></div>
         </div>
       </section>
     </main>

@@ -8,7 +8,7 @@ import requests
 import yfinance as yf
 
 DATA_DIR = "data"
-MAX_STOCKS = 100   # 先測試 100 檔，穩了再改成 None
+MAX_STOCKS = 100   # 要全掃改成 None
 SLEEP_SECONDS = 0.15
 
 
@@ -35,8 +35,6 @@ def get_twse_stock_list():
     df = df[1:].copy()
     df.columns = [str(c).strip() for c in df.columns]
 
-    print("TWSE columns:", df.columns.tolist())
-
     security_type_col = None
     for col in df.columns:
         if "有價證券別" in col:
@@ -49,10 +47,7 @@ def get_twse_stock_list():
             code_name_col = col
             break
 
-    if security_type_col is None:
-        print("找不到『有價證券別』欄位，直接列出前幾列資料：")
-        print(df.head(5).to_dict(orient="records"))
-    else:
+    if security_type_col is not None:
         df = df[df[security_type_col].astype(str).str.contains("股票", na=False)].copy()
 
     if code_name_col is None:
@@ -74,25 +69,15 @@ def get_twse_stock_list():
     df["yf_symbol"] = df["stock_id"] + ".TW"
 
     result = df[["stock_id", "stock_name", "yf_symbol"]].drop_duplicates().reset_index(drop=True)
-
-    print("抓到股票數量:", len(result))
-    print(result.head(10).to_dict(orient="records"))
-
     return result
 
 
 def flatten_yfinance_columns(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    把 yfinance 回傳欄位整理成單層欄位：
-    目標一定是 Open / High / Low / Close / Adj Close / Volume
-    """
     df = df.copy()
 
     if isinstance(df.columns, pd.MultiIndex):
         new_cols = []
-
         for col in df.columns:
-            # col 可能像 ('Close', '2330.TW') 或 ('2330.TW', 'Close')
             parts = [str(x) for x in col if x not in [None, ""]]
 
             chosen = None
@@ -107,7 +92,6 @@ def flatten_yfinance_columns(df: pd.DataFrame) -> pd.DataFrame:
             new_cols.append(chosen)
 
         df.columns = new_cols
-
     else:
         df.columns = [str(c) for c in df.columns]
 
@@ -131,7 +115,6 @@ def download_stock_data(symbol: str, period: str = "6mo"):
 
         df = flatten_yfinance_columns(df)
 
-        # 只保留我們需要的欄位
         keep_cols = ["Open", "High", "Low", "Close", "Adj Close", "Volume"]
         available_cols = [c for c in keep_cols if c in df.columns]
         df = df[available_cols].copy()
@@ -203,11 +186,9 @@ def classify_stock(df: pd.DataFrame):
     if None in [close, ma5, ma10, ma20, volume, vol_ma5, vol_ma20]:
         return None
 
-    # 趨勢穩健
     if close > ma5 > ma10 > ma20 and volume >= vol_ma20 * 0.9:
         return "trend"
 
-    # 蓄勢待發
     recent_high = safe_float(recent_10["High"].max())
     recent_low = safe_float(recent_10["Low"].min())
 
@@ -221,7 +202,6 @@ def classify_stock(df: pd.DataFrame):
     if near_ma20 and volatility_ratio < 0.08 and volume_expand:
         return "setup"
 
-    # 反轉雷達
     prev_close = safe_float(prev["Close"])
     prev_ma20 = safe_float(prev["MA20"])
 

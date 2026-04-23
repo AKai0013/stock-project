@@ -185,6 +185,10 @@ function renderCurrentView() {
       $("#tableForeign").innerHTML = createFundTable(foreign, "外資");
       $("#tableInvest").innerHTML = createFundTable(invest, "投信");
     }
+  } else if (state.currentView === "strong") {
+    const rows = buildStrongRows();
+    $("#resultBadge").textContent = `${rows.length} 筆`;
+    $("#tableStrong").innerHTML = createStrongTable(rows);
   } else {
     const total =
       (state.stocks.trend?.length || 0) +
@@ -193,6 +197,33 @@ function renderCurrentView() {
 
     $("#resultBadge").textContent = `${total} 筆`;
   }
+}
+
+function buildStrongRows() {
+  const trendRows = state.stocks.trend || [];
+  const foreignIds = new Set((state.funds.foreign || []).map(x => String(x.stock_id)));
+  const investIds = new Set((state.funds.invest || []).map(x => String(x.stock_id)));
+
+  let rows = trendRows.filter(row => {
+    const id = String(row.StockID || "");
+    return foreignIds.has(id) || investIds.has(id);
+  }).map(row => {
+    const id = String(row.StockID || "");
+    return {
+      ...row,
+      hasForeign: foreignIds.has(id),
+      hasInvest: investIds.has(id),
+    };
+  });
+
+  if (state.search) {
+    rows = rows.filter((row) =>
+      String(row.StockID || row.Stock || "").toUpperCase().includes(state.search)
+    );
+  }
+
+  rows.sort((a, b) => Number(b.ChangePct || 0) - Number(a.ChangePct || 0));
+  return rows;
 }
 
 function processRows(rows) {
@@ -288,6 +319,43 @@ function createStockTable(rows, type) {
               <td>${safeNum(row.Close)}</td>
               <td class="${getChangeClass(row.Change)}">${formatSigned(row.Change)}</td>
               <td class="${getChangeClass(row.ChangePct)}">${formatSigned(row.ChangePct)}%</td>
+              <td>${safeNum(row.Volume)}</td>
+            </tr>
+          `).join("")}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+function createStrongTable(rows) {
+  if (!rows.length) {
+    return '<div class="empty-state">目前沒有「主力＋趨勢」交集資料</div>';
+  }
+
+  return `
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>股票代碼</th>
+            <th>名稱</th>
+            <th>收盤價</th>
+            <th>漲跌幅</th>
+            <th>外資</th>
+            <th>投信</th>
+            <th>成交量</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${rows.map((row) => `
+            <tr>
+              <td>${row.StockID || "-"}</td>
+              <td>${row.Name || "-"}</td>
+              <td>${safeNum(row.Close)}</td>
+              <td class="${getChangeClass(row.ChangePct)}">${formatSigned(row.ChangePct)}%</td>
+              <td>${row.hasForeign ? "✓" : "-"}</td>
+              <td>${row.hasInvest ? "✓" : "-"}</td>
               <td>${safeNum(row.Volume)}</td>
             </tr>
           `).join("")}
