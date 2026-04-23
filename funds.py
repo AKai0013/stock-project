@@ -28,34 +28,30 @@ def _safe_get(row, keys):
 
 def _fetch_twse_t86(date_str):
     url = "https://www.twse.com.tw/rwd/zh/fund/T86"
+
     params = {
         "date": date_str,
         "selectType": "ALLBUT0999",
         "response": "json"
     }
+
     headers = {
-        "User-Agent": "Mozilla/5.0",
-        "Accept": "application/json"
+        "User-Agent": "Mozilla/5.0"
     }
 
     try:
-        resp = requests.get(url, params=params, headers=headers, timeout=20)
+        # 🔥 關鍵：timeout 改很短
+        resp = requests.get(url, params=params, headers=headers, timeout=5)
 
         if resp.status_code != 200:
-            print("TWSE status:", resp.status_code)
             return []
 
         data = resp.json()
-
-        if not isinstance(data, dict):
-            print("TWSE response is not dict")
-            return []
 
         rows = data.get("data", [])
         fields = data.get("fields", [])
 
         if not rows or not fields:
-            print("TWSE empty rows or fields")
             return []
 
         result = []
@@ -68,11 +64,11 @@ def _fetch_twse_t86(date_str):
         return result
 
     except Exception as e:
-        print("TWSE fetch error:", e)
+        print("TWSE fetch failed:", e)
         return []
 
 
-def _find_latest_available_rows(lookback_days=10):
+def _find_latest_available_rows(lookback_days=3):
     today = datetime.today().date()
 
     for i in range(lookback_days):
@@ -80,10 +76,11 @@ def _find_latest_available_rows(lookback_days=10):
         date_str = d.strftime("%Y%m%d")
 
         rows = _fetch_twse_t86(date_str)
+
         if rows:
             return rows, d.strftime("%Y-%m-%d"), ""
 
-    return [], None, "TWSE 官方暫時無法取得法人資料"
+    return [], None, "TWSE 連線逾時或暫時無法取得資料"
 
 
 def _build_twse_rank(rows, top_n=20):
