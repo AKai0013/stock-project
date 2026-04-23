@@ -106,8 +106,12 @@ function renderMiniList(selector, rows) {
 
   el.innerHTML = list.map((row) => `
     <div class="mini-item">
-      <strong>${row.StockID || row.Stock || row.stock_id || "-"} ${row.Name || ""}</strong>
-      <span>價格：${safeNum(row.Close || row.close)}　成交量：${safeNum(row.Volume || row.volume)}</span>
+      <strong>${row.StockID || row.Stock || "-"} ${row.Name || ""}</strong>
+      <span>
+        價格：${safeNum(row.Close)}
+       　漲跌：<span class="${getChangeClass(row.Change)}">${formatSigned(row.Change)} (${formatSigned(row.ChangePct)}%)</span>
+       　成交量：${safeNum(row.Volume)}
+      </span>
     </div>
   `).join("");
 }
@@ -166,17 +170,17 @@ function processRows(rows) {
 
   if (state.search) {
     result = result.filter((row) =>
-      String(row.Stock || row.StockID || row.stock_id || "").toUpperCase().includes(state.search)
+      String(row.StockID || row.Stock || "").toUpperCase().includes(state.search)
     );
   }
 
   result.sort((a, b) => {
-    const stockA = String(a.StockID || a.Stock || a.stock_id || "");
-    const stockB = String(b.StockID || b.Stock || b.stock_id || "");
-    const closeA = Number(a.Close || a.close || 0);
-    const closeB = Number(b.Close || b.close || 0);
-    const volA = Number(a.Volume || a.volume || 0);
-    const volB = Number(b.Volume || b.volume || 0);
+    const stockA = String(a.StockID || a.Stock || "");
+    const stockB = String(b.StockID || b.Stock || "");
+    const closeA = Number(a.Close || 0);
+    const closeB = Number(b.Close || 0);
+    const volA = Number(a.Volume || 0);
+    const volB = Number(b.Volume || 0);
 
     switch (state.sort) {
       case "stock-desc":
@@ -234,17 +238,21 @@ function createStockTable(rows, type) {
             <th>名稱</th>
             <th>分類</th>
             <th>收盤價</th>
+            <th>漲跌</th>
+            <th>漲跌幅</th>
             <th>成交量</th>
           </tr>
         </thead>
         <tbody>
           ${rows.map((row) => `
             <tr>
-              <td>${row.StockID || row.Stock || row.stock_id || "-"}</td>
+              <td>${row.StockID || row.Stock || "-"}</td>
               <td>${row.Name || "-"}</td>
               <td><span class="pill ${pillClass}">${pillText}</span></td>
-              <td>${safeNum(row.Close || row.close)}</td>
-              <td>${safeNum(row.Volume || row.volume)}</td>
+              <td>${safeNum(row.Close)}</td>
+              <td class="${getChangeClass(row.Change)}">${formatSigned(row.Change)}</td>
+              <td class="${getChangeClass(row.ChangePct)}">${formatSigned(row.ChangePct)}%</td>
+              <td>${safeNum(row.Volume)}</td>
             </tr>
           `).join("")}
         </tbody>
@@ -278,6 +286,21 @@ function createFundTable(rows, label) {
       </table>
     </div>
   `;
+}
+
+function getChangeClass(v) {
+  const n = Number(v || 0);
+  if (n > 0) return "up";
+  if (n < 0) return "down";
+  return "";
+}
+
+function formatSigned(v) {
+  if (v === null || v === undefined || v === "") return "-";
+  const n = Number(v);
+  if (Number.isNaN(n)) return String(v);
+  if (n > 0) return `+${n.toLocaleString("zh-TW")}`;
+  return n.toLocaleString("zh-TW");
 }
 
 function safeNum(v) {

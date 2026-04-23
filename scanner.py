@@ -4,10 +4,9 @@ import random
 import pandas as pd
 import yfinance as yf
 
-
 DATA_DIR = "data"
-MAX_STOCKS = None   # 全部掃描；若要先測試可改成 100 或 200
-SLEEP_SECONDS = 0.15  # 每檔稍微停一下，避免請求太密
+MAX_STOCKS = 100   # 先測試 100 檔，穩了再改成 None
+SLEEP_SECONDS = 0.15
 
 
 def ensure_data_dir():
@@ -15,13 +14,6 @@ def ensure_data_dir():
 
 
 def get_twse_stock_list():
-    """
-    抓台灣上市股票清單（先不含 ETF / 上櫃）
-    回傳欄位：
-    - stock_id
-    - stock_name
-    - yf_symbol
-    """
     url = "https://isin.twse.com.tw/isin/C_public.jsp?strMode=2"
     tables = pd.read_html(url)
     df = tables[0]
@@ -29,33 +21,23 @@ def get_twse_stock_list():
     df.columns = df.iloc[0]
     df = df[1:].copy()
 
-    # 只保留股票
     df = df[df["有價證券別"] == "股票"].copy()
 
-    # 拆代碼和名稱
     split_col = df["有價證券代號及名稱"].astype(str).str.split("　", n=1, expand=True)
 
-    # 有些資料不是全形空格，再補一次一般空格拆分
     if split_col.shape[1] < 2:
         split_col = df["有價證券代號及名稱"].astype(str).str.split(" ", n=1, expand=True)
 
     df["stock_id"] = split_col[0].astype(str).str.strip()
     df["stock_name"] = split_col[1].astype(str).str.strip() if split_col.shape[1] > 1 else ""
 
-    # 只保留四碼股票代號
-    df = df[df["stock_id"].str.match(r"^\\d{4}$", na=False)].copy()
-
-    # yfinance 台股代碼
+    df = df[df["stock_id"].str.match(r"^\d{4}$", na=False)].copy()
     df["yf_symbol"] = df["stock_id"] + ".TW"
 
-    result = df[["stock_id", "stock_name", "yf_symbol"]].drop_duplicates().reset_index(drop=True)
-    return result
+    return df[["stock_id", "stock_name", "yf_symbol"]].drop_duplicates().reset_index(drop=True)
 
 
 def download_stock_data(symbol: str, period: str = "6mo"):
-    """
-    下載單檔歷史資料
-    """
     try:
         df = yf.download(
             symbol,
@@ -80,9 +62,6 @@ def download_stock_data(symbol: str, period: str = "6mo"):
 
 
 def add_indicators(df: pd.DataFrame):
-    """
-    加技術指標
-    """
     out = df.copy()
     out["MA5"] = out["Close"].rolling(5).mean()
     out["MA10"] = out["Close"].rolling(10).mean()
@@ -93,13 +72,6 @@ def add_indicators(df: pd.DataFrame):
 
 
 def classify_stock(df: pd.DataFrame):
-    """
-    分成三種：
-    - trend: 趨勢穩健
-    - setup: 蓄勢待發
-    - reversal: 反轉雷達
-    回傳字串或 None
-    """
     if df is None or len(df) < 25:
         return None
 
@@ -118,11 +90,9 @@ def classify_stock(df: pd.DataFrame):
     if None in [ma5, ma10, ma20, vol_ma5, vol_ma20]:
         return None
 
-    # 1) 趨勢穩健：收盤 > MA5 > MA10 > MA20，且量能不弱
     if close > ma5 > ma10 > ma20 and volume >= vol_ma20 * 0.9:
         return "trend"
 
-    # 2) 蓄勢待發：股價貼近 MA20，近 10 日波動不大，今天量比 5 日均量放大
     recent_high = recent_10["High"].max()
     recent_low = recent_10["Low"].min()
     volatility_ratio = (recent_high - recent_low) / close if close > 0 else 999
@@ -132,7 +102,6 @@ def classify_stock(df: pd.DataFrame):
     if near_ma20 and volatility_ratio < 0.08 and volume_expand:
         return "setup"
 
-    # 3) 反轉雷達：昨天在 MA20 下，今天站上 MA20，且量能放大
     prev_close = float(prev["Close"])
     prev_ma20 = float(prev["MA20"]) if pd.notna(prev["MA20"]) else None
     if prev_ma20 is not None:
@@ -183,7 +152,6 @@ def run_scan():
     ensure_data_dir()
 
     stock_df = get_twse_stock_list()
-
     if MAX_STOCKS is not None:
         stock_df = stock_df.head(MAX_STOCKS).copy()
 
@@ -194,19 +162,15 @@ def run_scan():
     setup_rows = []
     reversal_rows = []
 
-    success_count = 0
-    skip_count = 0
-
     for idx, row in stock_df.iterrows():
         stock_id = row["stock_id"]
         stock_name = row["stock_name"]
         symbol = row["yf_symbol"]
 
-        print(f"[{idx + 1}/{total}] 掃描 {stock_id} {stock_name} ({symbol})")
+        print(f"[{idx + 1}/{total}] 掃描 {stock_id} {stock_name}")
 
         df = download_stock_data(symbol, period="6mo")
         if df is None:
-            skip_count += 1
             continue
 
         df = add_indicators(df)
@@ -222,21 +186,16 @@ def run_scan():
             elif category == "reversal":
                 reversal_rows.append(item)
 
-        success_count += 1
         time.sleep(SLEEP_SECONDS + random.uniform(0, 0.05))
 
     save_csv("trend.csv", trend_rows)
     save_csv("setup.csv", setup_rows)
     save_csv("reversal.csv", reversal_rows)
 
-    print("=" * 50)
     print("掃描完成")
-    print(f"成功處理：{success_count}")
-    print(f"跳過/失敗：{skip_count}")
-    print(f"趨勢穩健：{len(trend_rows)}")
-    print(f"蓄勢待發：{len(setup_rows)}")
-    print(f"反轉雷達：{len(reversal_rows)}")
-    print("=" * 50)
+    print("趨勢穩健:", len(trend_rows))
+    print("蓄勢待發:", len(setup_rows))
+    print("反轉雷達:", len(reversal_rows))
 
 
 if __name__ == "__main__":

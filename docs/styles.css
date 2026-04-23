@@ -474,3 +474,12 @@ tr:hover td {
     min-width: 100%;
   }
 }
+.up {
+  color: #ff6b81;
+  font-weight: 700;
+}
+
+.down {
+  color: #49dcb1;
+  font-weight: 700;
+}
