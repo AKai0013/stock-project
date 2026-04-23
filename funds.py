@@ -1,20 +1,107 @@
+from datetime import datetime, timedelta
 from FinMind.data import DataLoader
-from datetime import datetime
+import pandas as pd
+import os
+
+FINMIND_TOKEN = os.getenv("FINMIND_TOKEN", "")
 
 api = DataLoader()
 
-def get_top_buyers():
-    today = datetime.today().strftime("%Y-%m-%d")
+if FINMIND_TOKEN:
+    try:
+        api.login_by_token(api_token=FINMIND_TOKEN)
+        print("FinMind token login success")
+    except Exception as e:
+        print("FinMind token login failed:", e)
+else:
+    print("FINMIND_TOKEN is empty")
 
-    df = api.taiwan_stock_institutional_investors(
-        start_date=today,
-        end_date=today
-    )
 
-    foreign = df[df["name"] == "Foreign_Investor"]
-    invest = df[df["name"] == "Investment_Trust"]
+def _normalize_name(name: str) -> str:
+    if not isinstance(name, str):
+        return ""
+    return name.strip().lower()
 
-    foreign_rank = foreign.groupby("stock_id")["buy_sell"].sum().nlargest(20).reset_index()
-    invest_rank = invest.groupby("stock_id")["buy_sell"].sum().nlargest(20).reset_index()
 
-    return foreign_rank.to_dict("records"), invest_rank.to_dict("records")
+def _pick_buy_sell_column(df: pd.DataFrame):
+    candidates = [
+        "buy_sell",
+        "buy_sell_difference",
+        "buy_sell_diff",
+        "net_buy_sell",
+    ]
+    for col in candidates:
+        if col in df.columns:
+            return col
+    return None
+
+
+def _pick_date_column(df: pd.DataFrame):
+    for col in ["date", "Date"]:
+        if col in df.columns:
+            return col
+    return None
+
+
+def get_funds_rank(days: int = 1, top_n: int = 20):
+    end_date = datetime.today().date()
+    start_date = end_date - timedelta(days=max(days * 3, 7))
+
+    try:
+        df = api.taiwan_stock_institutional_investors(
+            start_date=str(start_date),
+            end_date=str(end_date)
+        )
+    except Exception as e:
+        print("FinMind fetch failed:", e)
+        return {"foreign": [], "invest": []}
+
+    if df is None or df.empty:
+        return {"foreign": [], "invest": []}
+
+    date_col = _pick_date_column(df)
+    buy_sell_col = _pick_buy_sell_column(df)
+
+    if date_col is None or buy_sell_col is None:
+        print("Unexpected columns:", df.columns.tolist())
+        return {"foreign": [], "invest": []}
+
+    if "stock_id" not in df.columns or "name" not in df.columns:
+        print("Missing expected columns:", df.columns.tolist())
+        return {"foreign": [], "invest": []}
+
+    df = df.copy()
+    df[date_col] = pd.to_datetime(df[date_col], errors="coerce")
+    df = df.dropna(subset=[date_col])
+
+    latest_dates = sorted(df[date_col].dt.date.unique())[-days:]
+    df = df[df[date_col].dt.date.isin(latest_dates)].copy()
+    df["name_norm"] = df["name"].map(_normalize_name)
+
+    foreign_df = df[df["name_norm"].str.contains("foreign", na=False)].copy()
+    invest_df = df[df["name_norm"].str.contains("investment", na=False)].copy()
+
+    def build_rank(sub_df: pd.DataFrame):
+        if sub_df.empty:
+            return []
+
+        rank = (
+            sub_df.groupby("stock_id", as_index=False)[buy_sell_col]
+            .sum()
+            .sort_values(buy_sell_col, ascending=False)
+            .head(top_n)
+            .reset_index(drop=True)
+        )
+
+        return [
+            {
+                "stock_id": str(row["stock_id"]),
+                "buy_sell": int(row[buy_sell_col]) if pd.notna(row[buy_sell_col]) else 0
+            }
+            for _, row in rank.iterrows()
+        ]
+
+    return {
+        "foreign": build_rank(foreign_df),
+        "invest": build_rank(invest_df),
+    }
