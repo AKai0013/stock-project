@@ -8,17 +8,20 @@ import requests
 import yfinance as yf
 
 DATA_DIR = "data"
-MAX_STOCKS = 150   # 建議先測試，穩了改 None
-SLEEP_SECONDS = 0.15
+
+# 全掃就設 None；怕太慢可以先設 600
+MAX_STOCKS = None
+
+SLEEP_SECONDS = 0.08
+MIN_PRICE = 20
+MIN_AVG_VOLUME = 300000   # 平均成交量太小的先過濾
+PERIOD = "1y"
 
 
 def ensure_data_dir():
     os.makedirs(DATA_DIR, exist_ok=True)
 
 
-# =========================
-# 🔥 抓「股票 + ETF」
-# =========================
 def get_twse_stock_list():
     url = "https://isin.twse.com.tw/isin/C_public.jsp?strMode=2"
     headers = {"User-Agent": "Mozilla/5.0"}
@@ -28,13 +31,14 @@ def get_twse_stock_list():
     resp.encoding = "big5"
 
     tables = pd.read_html(StringIO(resp.text), flavor="lxml")
+    if not tables:
+        raise ValueError("讀不到 TWSE 表格")
 
     df = tables[0].copy()
     df.columns = df.iloc[0]
     df = df[1:].copy()
     df.columns = [str(c).strip() for c in df.columns]
 
-    # 找欄位
     type_col = None
     code_col = None
 
@@ -45,13 +49,12 @@ def get_twse_stock_list():
             code_col = col
 
     if code_col is None:
-        raise Exception("找不到代號欄位")
+        raise ValueError("找不到『有價證券代號及名稱』欄位")
 
-    # 🔥 關鍵：同時抓 股票 + ETF
-    if type_col:
-        df = df[
-            df[type_col].astype(str).str.contains("股票|ETF", na=False)
-        ].copy()
+    if type_col is not None:
+        df = df[df[type_col].astype(str).str.contains("股票|ETF", na=False)].copy()
+    else:
+        df["有價證券別"] = "未知"
 
     raw = df[code_col].astype(str).str.strip()
 
@@ -62,28 +65,24 @@ def get_twse_stock_list():
     df["stock_id"] = split_col[0].astype(str).str.strip()
     df["stock_name"] = split_col[1].astype(str).str.strip() if split_col.shape[1] > 1 else ""
 
-    # 🔥 股票 + ETF 編碼規則
     df = df[df["stock_id"].str.match(r"^\d{4,5}$", na=False)].copy()
 
+    df["asset_type"] = df[type_col].astype(str).str.strip() if type_col is not None else "未知"
     df["yf_symbol"] = df["stock_id"] + ".TW"
 
-    result = df[["stock_id", "stock_name", "yf_symbol"]].drop_duplicates().reset_index(drop=True)
+    result = df[["stock_id", "stock_name", "asset_type", "yf_symbol"]].drop_duplicates().reset_index(drop=True)
 
     print("抓到股票+ETF數量:", len(result))
     return result
 
 
-# =========================
-# 🔥 修正 yfinance 欄位
-# =========================
 def flatten_yfinance_columns(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
 
     if isinstance(df.columns, pd.MultiIndex):
         new_cols = []
-
         for col in df.columns:
-            parts = [str(x) for x in col if x]
+            parts = [str(x) for x in col if x not in [None, ""]]
 
             target = None
             for p in parts:
@@ -103,15 +102,13 @@ def flatten_yfinance_columns(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-# =========================
-# 🔥 抓價格
-# =========================
 def download_stock_data(symbol):
     try:
         df = yf.download(
             symbol,
-            period="6mo",
+            period=PERIOD,
             interval="1d",
+            auto_adjust=False,
             progress=False,
             threads=False
         )
@@ -125,90 +122,159 @@ def download_stock_data(symbol):
         if not all(c in df.columns for c in need):
             return None
 
-        df = df.dropna()
+        df = df[need].dropna().copy()
 
-        if len(df) < 25:
+        if len(df) < 130:
             return None
 
         return df
 
-    except:
+    except Exception:
         return None
 
 
-# =========================
-# 技術指標
-# =========================
+def calc_rsi(series, period=14):
+    delta = series.diff()
+
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
+
+    avg_gain = gain.rolling(period).mean()
+    avg_loss = loss.rolling(period).mean()
+
+    rs = avg_gain / avg_loss.replace(0, pd.NA)
+    rsi = 100 - (100 / (1 + rs))
+    return rsi.fillna(50)
+
+
 def add_indicators(df):
-    df["MA5"] = df["Close"].rolling(5).mean()
-    df["MA10"] = df["Close"].rolling(10).mean()
+    df = df.copy()
+
     df["MA20"] = df["Close"].rolling(20).mean()
-    df["VOL5"] = df["Volume"].rolling(5).mean()
+    df["MA60"] = df["Close"].rolling(60).mean()
+    df["MA120"] = df["Close"].rolling(120).mean()
+
     df["VOL20"] = df["Volume"].rolling(20).mean()
+
+    df["HIGH20"] = df["High"].rolling(20).max()
+    df["HIGH60"] = df["High"].rolling(60).max()
+    df["HIGH120"] = df["High"].rolling(120).max()
+
+    df["LOW20"] = df["Low"].rolling(20).min()
+    df["RSI14"] = calc_rsi(df["Close"], 14)
+
+    df["ChangePct"] = df["Close"].pct_change() * 100
+
     return df
 
 
-# =========================
-# 分類
-# =========================
-def classify(df):
-    if len(df) < 25:
+def passes_basic_filters(df, asset_type):
+    last = df.iloc[-1]
+
+    close = float(last["Close"])
+    vol20 = float(last["VOL20"]) if pd.notna(last["VOL20"]) else 0
+
+    if close < MIN_PRICE:
+        return False
+
+    # ETF 可稍微放寬量能，股票嚴格一點
+    min_vol = 200000 if "ETF" in str(asset_type) else MIN_AVG_VOLUME
+    if vol20 < min_vol:
+        return False
+
+    return True
+
+
+def classify(df, asset_type):
+    if len(df) < 130:
         return None
 
     last = df.iloc[-1]
     prev = df.iloc[-2]
 
-    close = last["Close"]
-    ma5 = last["MA5"]
-    ma10 = last["MA10"]
-    ma20 = last["MA20"]
+    close = float(last["Close"])
+    ma20 = float(last["MA20"]) if pd.notna(last["MA20"]) else None
+    ma60 = float(last["MA60"]) if pd.notna(last["MA60"]) else None
+    ma120 = float(last["MA120"]) if pd.notna(last["MA120"]) else None
+    vol = float(last["Volume"])
+    vol20 = float(last["VOL20"]) if pd.notna(last["VOL20"]) else None
+    high20 = float(last["HIGH20"]) if pd.notna(last["HIGH20"]) else None
+    high120 = float(last["HIGH120"]) if pd.notna(last["HIGH120"]) else None
+    low20 = float(last["LOW20"]) if pd.notna(last["LOW20"]) else None
+    rsi = float(last["RSI14"]) if pd.notna(last["RSI14"]) else None
+    change_pct = float(last["ChangePct"]) if pd.notna(last["ChangePct"]) else 0
 
-    vol = last["Volume"]
-    vol5 = last["VOL5"]
-    vol20 = last["VOL20"]
+    prev_close = float(prev["Close"])
+    prev_ma20 = float(prev["MA20"]) if pd.notna(prev["MA20"]) else None
 
-    if any(pd.isna(x) for x in [ma5, ma10, ma20, vol5, vol20]):
+    if None in [ma20, ma60, ma120, vol20, high20, high120, low20, rsi]:
         return None
 
-    # 🔥 趨勢
-    if close > ma5 > ma10 > ma20 and vol >= vol20 * 0.9:
+    if not passes_basic_filters(df, asset_type):
+        return None
+
+    # === 趨勢穩健 ===
+    # 中期多頭 + 接近高點 + 量能支持
+    if (
+        close > ma20 > ma60 > ma120 and
+        close >= high20 * 0.98 and
+        close >= high120 * 0.85 and
+        vol >= vol20 * 1.1 and
+        55 <= rsi <= 80
+    ):
         return "trend"
 
-    # 🔥 蓄勢
-    high = df["High"].tail(10).max()
-    low = df["Low"].tail(10).min()
-
-    if abs(close - ma20) / ma20 < 0.03 and (high - low) / close < 0.08 and vol > vol5 * 1.2:
+    # === 蓄勢待發 ===
+    # 中期偏多、箱體收斂、接近突破
+    range_20 = (high20 - low20) / close if close > 0 else 999
+    if (
+        close > ma60 and
+        ma20 > ma60 and
+        ma60 >= ma120 * 0.97 and
+        close >= high20 * 0.96 and
+        range_20 < 0.12 and
+        vol >= vol20 * 0.9 and
+        45 <= rsi <= 68
+    ):
         return "setup"
 
-    # 🔥 反轉
-    if prev["Close"] < prev["MA20"] and close > ma20 and vol > vol5 * 1.1:
+    # === 反轉雷達 ===
+    # 昨天還在 MA20 下，今天強勢站回 + 放量
+    if (
+        prev_ma20 is not None and
+        prev_close < prev_ma20 and
+        close > ma20 and
+        change_pct >= 3 and
+        vol >= vol20 * 1.5 and
+        rsi >= 50
+    ):
         return "reversal"
 
     return None
 
 
-# =========================
-# 產出資料
-# =========================
-def make_row(stock_id, name, symbol, df):
+def make_row(stock_id, name, asset_type, symbol, df):
     last = df.iloc[-1]
     prev = df.iloc[-2]
 
     close = float(last["Close"])
     prev_close = float(prev["Close"])
-
     change = close - prev_close
-    pct = change / prev_close * 100
+    pct = (change / prev_close * 100) if prev_close != 0 else 0
 
     return {
         "Stock": symbol,
         "StockID": stock_id,
         "Name": name,
+        "AssetType": asset_type,
         "Close": round(close, 2),
         "Change": round(change, 2),
         "ChangePct": round(pct, 2),
-        "Volume": int(last["Volume"])
+        "Volume": int(last["Volume"]),
+        "MA20": round(float(last["MA20"]), 2) if pd.notna(last["MA20"]) else None,
+        "MA60": round(float(last["MA60"]), 2) if pd.notna(last["MA60"]) else None,
+        "MA120": round(float(last["MA120"]), 2) if pd.notna(last["MA120"]) else None,
+        "RSI14": round(float(last["RSI14"]), 2) if pd.notna(last["RSI14"]) else None,
     }
 
 
@@ -218,9 +284,6 @@ def save_csv(name, rows):
     df.to_csv(path, index=False, encoding="utf-8-sig")
 
 
-# =========================
-# 主掃描
-# =========================
 def run():
     ensure_data_dir()
 
@@ -235,26 +298,31 @@ def run():
     print("開始掃描:", total)
 
     for i, row in stocks.iterrows():
-        print(f"[{i+1}/{total}] {row['stock_id']} {row['stock_name']}")
+        stock_id = row["stock_id"]
+        stock_name = row["stock_name"]
+        asset_type = row["asset_type"]
+        symbol = row["yf_symbol"]
 
-        df = download_stock_data(row["yf_symbol"])
+        print(f"[{i+1}/{total}] {stock_id} {stock_name} ({asset_type})")
+
+        df = download_stock_data(symbol)
         if df is None:
             continue
 
         df = add_indicators(df)
-        c = classify(df)
+        category = classify(df, asset_type)
 
-        if c:
-            r = make_row(row["stock_id"], row["stock_name"], row["yf_symbol"], df)
+        if category:
+            result = make_row(stock_id, stock_name, asset_type, symbol, df)
 
-            if c == "trend":
-                trend.append(r)
-            elif c == "setup":
-                setup.append(r)
-            elif c == "reversal":
-                reversal.append(r)
+            if category == "trend":
+                trend.append(result)
+            elif category == "setup":
+                setup.append(result)
+            elif category == "reversal":
+                reversal.append(result)
 
-        time.sleep(SLEEP_SECONDS + random.random() * 0.05)
+        time.sleep(SLEEP_SECONDS + random.random() * 0.03)
 
     save_csv("trend.csv", trend)
     save_csv("setup.csv", setup)
