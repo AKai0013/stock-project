@@ -5,25 +5,30 @@ import os
 
 FINMIND_TOKEN = os.getenv("FINMIND_TOKEN", "")
 
-api = DataLoader()
+api = None
 
-if FINMIND_TOKEN:
-    try:
-        api.login_by_token(api_token=FINMIND_TOKEN)
-        print("FinMind token login success")
-    except Exception as e:
-        print("FinMind token login failed:", e)
-else:
-    print("FINMIND_TOKEN is empty")
+try:
+    api = DataLoader()
+    if FINMIND_TOKEN:
+        try:
+            api.login_by_token(api_token=FINMIND_TOKEN)
+            print("FinMind token login success")
+        except Exception as e:
+            print("FinMind token login failed:", e)
+    else:
+        print("FINMIND_TOKEN is empty")
+except Exception as e:
+    print("FinMind DataLoader init failed:", e)
+    api = None
 
 
-def _normalize_name(name: str) -> str:
+def _normalize_name(name):
     if not isinstance(name, str):
         return ""
     return name.strip().lower()
 
 
-def _pick_buy_sell_column(df: pd.DataFrame):
+def _pick_buy_sell_column(df):
     candidates = [
         "buy_sell",
         "buy_sell_difference",
@@ -36,14 +41,17 @@ def _pick_buy_sell_column(df: pd.DataFrame):
     return None
 
 
-def _pick_date_column(df: pd.DataFrame):
+def _pick_date_column(df):
     for col in ["date", "Date"]:
         if col in df.columns:
             return col
     return None
 
 
-def get_funds_rank(days: int = 1, top_n: int = 20):
+def get_funds_rank(days=1, top_n=20):
+    if api is None:
+        return {"foreign": [], "invest": []}
+
     end_date = datetime.today().date()
     start_date = end_date - timedelta(days=max(days * 3, 7))
 
@@ -81,7 +89,7 @@ def get_funds_rank(days: int = 1, top_n: int = 20):
     foreign_df = df[df["name_norm"].str.contains("foreign", na=False)].copy()
     invest_df = df[df["name_norm"].str.contains("investment", na=False)].copy()
 
-    def build_rank(sub_df: pd.DataFrame):
+    def build_rank(sub_df):
         if sub_df.empty:
             return []
 
@@ -93,13 +101,13 @@ def get_funds_rank(days: int = 1, top_n: int = 20):
             .reset_index(drop=True)
         )
 
-        return [
-            {
+        result = []
+        for _, row in rank.iterrows():
+            result.append({
                 "stock_id": str(row["stock_id"]),
                 "buy_sell": int(row[buy_sell_col]) if pd.notna(row[buy_sell_col]) else 0
-            }
-            for _, row in rank.iterrows()
-        ]
+            })
+        return result
 
     return {
         "foreign": build_rank(foreign_df),
