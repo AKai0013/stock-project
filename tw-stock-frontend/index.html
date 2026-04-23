@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Trend Core TW</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-mark">TW</div>
+        <div>
+          <div class="brand-title">Trend Core TW</div>
+          <div class="brand-subtitle">台股策略研究面板</div>
+        </div>
+      </div>
+
+      <nav class="nav">
+        <button class="nav-link active" data-view="dashboard">總覽儀表板</button>
+        <button class="nav-link" data-view="trend">趨勢穩健</button>
+        <button class="nav-link" data-view="setup">蓄勢待發</button>
+        <button class="nav-link" data-view="reversal">反轉雷達</button>
+        <button class="nav-link" data-view="funds">法人排行榜</button>
+      </nav>
+
+      <div class="sidebar-footer">
+        <div class="status-row">
+          <span class="dot"></span>
+          <span id="apiStatusText">等待連線</span>
+        </div>
+        <div class="small-text">請先在 app.js 設定你的 Render API 網址</div>
+      </div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <div>
+          <h1>台股研究中心</h1>
+          <p class="subtitle">市場掃描 → 策略分類 → 法人觀察</p>
+        </div>
+        <div class="topbar-actions">
+          <button id="refreshBtn" class="btn btn-primary">重新載入資料</button>
+        </div>
+      </header>
+
+      <section class="hero-grid">
+        <div class="hero-card">
+          <div class="hero-label">趨勢穩健</div>
+          <div class="hero-value" id="countTrend">-</div>
+          <div class="hero-hint">符合多頭排列與量能條件</div>
+        </div>
+        <div class="hero-card">
+          <div class="hero-label">蓄勢待發</div>
+          <div class="hero-value" id="countSetup">-</div>
+          <div class="hero-hint">盤整後等待放量突破</div>
+        </div>
+        <div class="hero-card">
+          <div class="hero-label">反轉雷達</div>
+          <div class="hero-value" id="countReversal">-</div>
+          <div class="hero-hint">剛站回均線、可能轉強</div>
+        </div>
+        <div class="hero-card">
+          <div class="hero-label">資料狀態</div>
+          <div class="hero-value small" id="lastUpdated">尚未載入</div>
+          <div class="hero-hint">以 API 回應時間為準</div>
+        </div>
+      </section>
+
+      <section class="toolbar card">
+        <div class="toolbar-left">
+          <input id="searchInput" type="text" placeholder="搜尋股票代碼..." />
+          <select id="sortSelect">
+            <option value="stock-asc">代碼 A → Z</option>
+            <option value="stock-desc">代碼 Z → A</option>
+            <option value="close-desc">價格 高 → 低</option>
+            <option value="close-asc">價格 低 → 高</option>
+            <option value="volume-desc">成交量 高 → 低</option>
+            <option value="volume-asc">成交量 低 → 高</option>
+          </select>
+        </div>
+        <div class="toolbar-right">
+          <span class="badge" id="resultBadge">0 筆</span>
+        </div>
+      </section>
+
+      <section id="view-dashboard" class="view active-view">
+        <div class="content-grid">
+          <div class="card">
+            <div class="card-header">
+              <h2>策略分布</h2>
+            </div>
+            <div class="metric-stack">
+              <div class="metric-row">
+                <span>趨勢穩健</span>
+                <strong id="dashTrend">-</strong>
+              </div>
+              <div class="progress"><div id="barTrend"></div></div>
+
+              <div class="metric-row">
+                <span>蓄勢待發</span>
+                <strong id="dashSetup">-</strong>
+              </div>
+              <div class="progress"><div id="barSetup"></div></div>
+
+              <div class="metric-row">
+                <span>反轉雷達</span>
+                <strong id="dashReversal">-</strong>
+              </div>
+              <div class="progress"><div id="barReversal"></div></div>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-header">
+              <h2>快速說明</h2>
+            </div>
+            <div class="note-list">
+              <div class="note-item">
+                <div class="note-title">趨勢穩健</div>
+                <div class="note-text">適合先找已進入上升趨勢且量能支持的標的。</div>
+              </div>
+              <div class="note-item">
+                <div class="note-title">蓄勢待發</div>
+                <div class="note-text">適合觀察盤整後是否爆量突破，偏提前布局。</div>
+              </div>
+              <div class="note-item">
+                <div class="note-title">反轉雷達</div>
+                <div class="note-text">適合捕捉剛翻多的起點，但要搭配法人或成交量過濾。</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card mt16">
+          <div class="card-header">
+            <h2>最新清單預覽</h2>
+          </div>
+          <div class="preview-grid">
+            <div>
+              <h3>趨勢前 5 檔</h3>
+              <div id="previewTrend" class="mini-list"></div>
+            </div>
+            <div>
+              <h3>蓄勢前 5 檔</h3>
+              <div id="previewSetup" class="mini-list"></div>
+            </div>
+            <div>
+              <h3>反轉前 5 檔</h3>
+              <div id="previewReversal" class="mini-list"></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section id="view-trend" class="view">
+        <div class="card">
+          <div class="card-header">
+            <h2>趨勢穩健</h2>
+            <p>已在漲、量能支持、多頭排列</p>
+          </div>
+          <div id="tableTrend"></div>
+        </div>
+      </section>
+
+      <section id="view-setup" class="view">
+        <div class="card">
+          <div class="card-header">
+            <h2>蓄勢待發</h2>
+            <p>盤整接近均線，等待放量突破</p>
+          </div>
+          <div id="tableSetup"></div>
+        </div>
+      </section>
+
+      <section id="view-reversal" class="view">
+        <div class="card">
+          <div class="card-header">
+            <h2>反轉雷達</h2>
+            <p>剛站回均線，可能由弱轉強</p>
+          </div>
+          <div id="tableReversal"></div>
+        </div>
+      </section>
+
+      <section id="view-funds" class="view">
+        <div class="content-grid">
+          <div class="card">
+            <div class="card-header">
+              <h2>外資買超排行</h2>
+            </div>
+            <div id="tableForeign"></div>
+          </div>
+          <div class="card">
+            <div class="card-header">
+              <h2>投信買超排行</h2>
+            </div>
+            <div id="tableInvest"></div>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

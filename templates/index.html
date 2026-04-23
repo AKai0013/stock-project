@@ -1,8 +1,16 @@
 <h1>台股選股系統</h1>
 
-<a href="/funds">法人排行榜</a>
+<button onclick="load()">載入資料</button>
 
 <h2>趨勢股</h2>
-{% for s in trend %}
-<p>{{ s.Stock }} - {{ s.Close }}</p>
-{% endfor %}
+<div id="trend"></div>
+
+<script>
+async function load() {
+    const res = await fetch("https://stock-project-bnio.onrender.com/api/stocks");
+    const data = await res.json();
+
+    document.getElementById("trend").innerHTML =
+        data.trend.map(s => `<p>${s.Stock} - ${s.Close}</p>`).join("");
+}
+</script>
