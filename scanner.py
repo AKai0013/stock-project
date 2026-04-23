@@ -8,10 +8,7 @@ import requests
 import yfinance as yf
 
 DATA_DIR = "data"
-
-# 全掃就設 None；怕太慢先設 600
 MAX_STOCKS = None
-
 SLEEP_SECONDS = 0.08
 MIN_PRICE = 20
 MIN_AVG_VOLUME = 300000
@@ -20,6 +17,20 @@ PERIOD = "1y"
 
 def ensure_data_dir():
     os.makedirs(DATA_DIR, exist_ok=True)
+
+
+def is_tw_etf(stock_id: str, asset_type: str) -> bool:
+    stock_id = str(stock_id).strip()
+    asset_type = str(asset_type).strip().upper()
+
+    # 台灣 ETF 代碼幾乎都以 00 開頭，例如 0050, 006208, 00713
+    if stock_id.startswith("00"):
+        return True
+
+    if "ETF" in asset_type:
+        return True
+
+    return False
 
 
 def get_twse_stock_list():
@@ -51,11 +62,6 @@ def get_twse_stock_list():
     if code_col is None:
         raise ValueError("找不到『有價證券代號及名稱』欄位")
 
-    if type_col is not None:
-        df = df[df[type_col].astype(str).str.contains("股票|ETF", na=False)].copy()
-    else:
-        df["有價證券別"] = "未知"
-
     raw = df[code_col].astype(str).str.strip()
 
     split_col = raw.str.split("　", n=1, expand=True)
@@ -65,15 +71,17 @@ def get_twse_stock_list():
     df["stock_id"] = split_col[0].astype(str).str.strip()
     df["stock_name"] = split_col[1].astype(str).str.strip() if split_col.shape[1] > 1 else ""
 
-    df = df[df["stock_id"].str.match(r"^\d{4,5}$", na=False)].copy()
+    # 保留 4~6 碼，ETF 可能有 5 或 6 碼
+    df = df[df["stock_id"].str.match(r"^\d{4,6}$", na=False)].copy()
 
     df["asset_type"] = df[type_col].astype(str).str.strip() if type_col is not None else "未知"
-    df["is_etf"] = df["asset_type"].astype(str).str.contains("ETF", na=False)
+    df["is_etf"] = df.apply(lambda r: is_tw_etf(r["stock_id"], r["asset_type"]), axis=1)
     df["yf_symbol"] = df["stock_id"] + ".TW"
 
     result = df[["stock_id", "stock_name", "asset_type", "is_etf", "yf_symbol"]].drop_duplicates().reset_index(drop=True)
 
     print("抓到股票+ETF數量:", len(result))
+    print(result.head(10).to_dict("records"))
     return result
 
 
@@ -262,7 +270,7 @@ def make_row(stock_id, name, asset_type, is_etf, symbol, df):
 
     return {
         "Stock": symbol,
-        "StockID": stock_id,
+        "StockID": str(stock_id),   # 關鍵：強制字串
         "Name": name,
         "AssetType": asset_type,
         "IsETF": bool(is_etf),
@@ -302,7 +310,7 @@ def run():
     print("開始掃描:", total)
 
     for i, row in stocks.iterrows():
-        stock_id = row["stock_id"]
+        stock_id = str(row["stock_id"]).strip()
         stock_name = row["stock_name"]
         asset_type = row["asset_type"]
         is_etf = bool(row["is_etf"])

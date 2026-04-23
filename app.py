@@ -10,7 +10,21 @@ CORS(app)
 
 def load_csv(file):
     try:
-        return pd.read_csv(file).to_dict("records")
+        df = pd.read_csv(file, dtype=str)
+
+        numeric_cols = [
+            "Close", "Change", "ChangePct", "Volume",
+            "MA20", "MA60", "MA120", "RSI14",
+            "High20", "High120", "Vol20",
+            "NearHigh20Pct", "NearHigh120Pct",
+            "score", "buy_sell"
+        ]
+
+        for col in numeric_cols:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors="coerce")
+
+        return df.to_dict("records")
     except Exception as e:
         print("CSV load failed:", file, e)
         return []
@@ -25,6 +39,10 @@ def load_json(file, default=None):
     except Exception as e:
         print("JSON load failed:", file, e)
         return default
+
+
+def is_true(v):
+    return str(v).lower() in ["true", "1", "yes"]
 
 
 @app.route("/")
@@ -70,13 +88,13 @@ def strong():
         invest_rows = load_csv("data/invest.csv")
         meta = load_json("data/funds_meta.json", default={})
 
-        foreign_ids = set(str(row.get("stock_id", "")) for row in foreign_rows)
-        invest_ids = set(str(row.get("stock_id", "")) for row in invest_rows)
+        foreign_ids = set(str(row.get("stock_id", "")).strip() for row in foreign_rows)
+        invest_ids = set(str(row.get("stock_id", "")).strip() for row in invest_rows)
 
         strong_rows = []
 
         for row in trend_rows:
-            stock_id = str(row.get("StockID", ""))
+            stock_id = str(row.get("StockID", "")).strip()
 
             has_foreign = stock_id in foreign_ids
             has_invest = stock_id in invest_ids
@@ -87,11 +105,13 @@ def strong():
                     "StockID": stock_id,
                     "Name": row.get("Name", ""),
                     "AssetType": row.get("AssetType", ""),
-                    "IsETF": bool(row.get("IsETF", False)),
+                    "IsETF": is_true(row.get("IsETF", False)),
                     "Close": row.get("Close", ""),
                     "Change": row.get("Change", ""),
                     "ChangePct": row.get("ChangePct", ""),
                     "Volume": row.get("Volume", ""),
+                    "RSI14": row.get("RSI14", ""),
+                    "NearHigh20Pct": row.get("NearHigh20Pct", ""),
                     "hasForeign": has_foreign,
                     "hasInvest": has_invest
                 })
@@ -119,8 +139,8 @@ def top10():
         invest_rows = load_csv("data/invest.csv")
         meta = load_json("data/funds_meta.json", default={})
 
-        foreign_ids = set(str(row.get("stock_id", "")) for row in foreign_rows)
-        invest_ids = set(str(row.get("stock_id", "")) for row in invest_rows)
+        foreign_ids = set(str(row.get("stock_id", "")).strip() for row in foreign_rows)
+        invest_ids = set(str(row.get("stock_id", "")).strip() for row in invest_rows)
 
         all_rows = []
 
@@ -128,13 +148,15 @@ def top10():
             try:
                 if v is None or v == "":
                     return default
+                if pd.isna(v):
+                    return default
                 return float(v)
             except Exception:
                 return default
 
         def score_stock(row, category):
-            stock_id = str(row.get("StockID", ""))
-            is_etf = str(row.get("IsETF", "False")).lower() in ["true", "1", "yes"]
+            stock_id = str(row.get("StockID", "")).strip()
+            is_etf = is_true(row.get("IsETF", False))
 
             change_pct = to_float(row.get("ChangePct", 0))
             volume = to_float(row.get("Volume", 0))
@@ -167,8 +189,6 @@ def top10():
                 score += 10
             elif volume >= 300000:
                 score += 6
-            else:
-                score += 0
 
             # 4. 接近高點強度
             if near_high20 >= 99:
@@ -197,12 +217,11 @@ def top10():
             if stock_id in invest_ids:
                 score += 8
 
-            # 7. ETF 調整
-            # ETF波動通常較穩，適度扣一點，避免全部被ETF吃榜
+            # 7. ETF 微調
             if is_etf:
                 score -= 4
 
-            # 8. 弱勢股扣分
+            # 8. 弱勢扣分
             if change_pct < -3:
                 score -= 8
 
@@ -211,8 +230,10 @@ def top10():
         def add_rows(rows, category):
             for row in rows:
                 item = dict(row)
-                stock_id = str(item.get("StockID", ""))
+                stock_id = str(item.get("StockID", "")).strip()
 
+                item["StockID"] = stock_id
+                item["IsETF"] = is_true(item.get("IsETF", False))
                 item["category"] = category
                 item["hasForeign"] = stock_id in foreign_ids
                 item["hasInvest"] = stock_id in invest_ids
@@ -224,18 +245,18 @@ def top10():
         add_rows(setup, "setup")
         add_rows(reversal, "reversal")
 
-        # 同一檔只留最高分
+        # 同一檔只保留最高分
         best_map = {}
         for row in all_rows:
-            stock_id = str(row.get("StockID", ""))
+            stock_id = str(row.get("StockID", "")).strip()
             if stock_id not in best_map or row["score"] > best_map[stock_id]["score"]:
                 best_map[stock_id] = row
 
         final_rows = list(best_map.values())
         final_rows.sort(key=lambda x: x["score"], reverse=True)
 
-        stock_top10 = [x for x in final_rows if str(x.get("IsETF", "False")).lower() not in ["true", "1", "yes"]][:10]
-        etf_top10 = [x for x in final_rows if str(x.get("IsETF", "False")).lower() in ["true", "1", "yes"]][:10]
+        stock_top10 = [x for x in final_rows if not is_true(x.get("IsETF", False))][:10]
+        etf_top10 = [x for x in final_rows if is_true(x.get("IsETF", False))][:10]
 
         return jsonify({
             "top10": final_rows[:10],
