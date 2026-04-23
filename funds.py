@@ -1,112 +1,165 @@
 from datetime import datetime, timedelta
-from FinMind.data import DataLoader
-import pandas as pd
-import os
-
-FINMIND_TOKEN = os.getenv("FINMIND_TOKEN", "")
-
-_api = None
-_api_ready = False
+import requests
 
 
-def get_api():
-    global _api, _api_ready
+def _to_int(value):
+    """
+    把字串數字轉成 int，處理:
+    - 1,234
+    - --
+    - X0.00
+    - 空字串
+    """
+    if value is None:
+        return 0
 
-    if _api_ready and _api is not None:
-        return _api
+    s = str(value).strip().replace(",", "")
 
-    try:
-        api = DataLoader()
+    if s in ["", "--", "---", "None", "nan"]:
+        return 0
 
-        if FINMIND_TOKEN:
-            try:
-                api.login_by_token(api_token=FINMIND_TOKEN)
-                print("FinMind token login success")
-            except Exception as e:
-                print("FinMind token login failed:", e)
-        else:
-            print("FINMIND_TOKEN is empty")
-
-        _api = api
-        _api_ready = True
-        return _api
-
-    except Exception as e:
-        print("FinMind DataLoader init failed:", e)
-        return None
-
-
-def fetch_raw_funds_df(lookback_days=10):
-    api = get_api()
-    if api is None:
-        return None, "FinMind 初始化失敗"
-
-    end_date = datetime.today().date()
-    start_date = end_date - timedelta(days=lookback_days)
+    # 去掉可能的特殊符號
+    s = s.replace("X", "").replace("x", "")
 
     try:
-        df = api.taiwan_stock_institutional_investors(
-            start_date=str(start_date),
-            end_date=str(end_date)
-        )
-    except Exception as e:
-        err_msg = str(e)
-
-        if "Your level is register" in err_msg:
-            return None, "目前 FinMind 帳號等級不足，法人資料尚未開通"
-
-        return None, f"FinMind 抓取失敗：{err_msg}"
-
-    if df is None or df.empty:
-        return None, "目前查無法人資料"
-
-    return df.copy(), None
+        return int(float(s))
+    except Exception:
+        return 0
 
 
-def find_buy_col(df):
-    candidates = [
-        "buy_sell",
-        "buy_sell_difference",
-        "buy_sell_diff",
-        "net_buy_sell",
-    ]
-
-    for col in candidates:
-        if col in df.columns:
-            return col
-
-    for col in df.columns:
-        col_str = str(col).lower()
-        if "buy" in col_str:
-            return col
-
-    return None
+def _safe_get(row, keys):
+    """
+    從 row 裡用多個可能欄位名找值
+    """
+    for k in keys:
+        if k in row:
+            return row[k]
+    return ""
 
 
-def build_rank(sub_df, buy_col, top_n=20):
-    if sub_df is None or sub_df.empty:
+def _fetch_twse_t86(date_str):
+    """
+    抓 TWSE 官方三大法人買賣超日報
+    date_str: YYYYMMDD
+    使用 ALLBUT0999，會包含一般上市股票與 ETF，
+    並排除權證等衍生性商品。
+    """
+    url = "https://www.twse.com.tw/rwd/zh/fund/T86"
+
+    params = {
+        "date": date_str,
+        "selectType": "ALLBUT0999",
+        "response": "json"
+    }
+
+    headers = {
+        "User-Agent": "Mozilla/5.0"
+    }
+
+    resp = requests.get(url, params=params, headers=headers, timeout=30)
+    resp.raise_for_status()
+
+    data = resp.json()
+
+    # 常見成功格式會有 data 欄
+    rows = data.get("data", [])
+    fields = data.get("fields", [])
+
+    if not rows or not fields:
         return []
 
-    grouped = (
-        sub_df.groupby("stock_id", as_index=False)[buy_col]
-        .sum()
-        .sort_values(buy_col, ascending=False)
-        .head(top_n)
-        .reset_index(drop=True)
-    )
-
     result = []
-    for _, row in grouped.iterrows():
-        result.append({
-            "stock_id": str(row.get("stock_id", "")),
-            "buy_sell": int(row[buy_col]) if pd.notna(row[buy_col]) else 0
-        })
+    for r in rows:
+        row = {}
+        for i, field in enumerate(fields):
+            row[field] = r[i] if i < len(r) else ""
+        result.append(row)
 
     return result
 
 
+def _find_latest_available_rows(lookback_days=10):
+    """
+    往前回找最近有資料的交易日
+    """
+    today = datetime.today().date()
+
+    for i in range(lookback_days):
+        d = today - timedelta(days=i)
+        date_str = d.strftime("%Y%m%d")
+
+        try:
+            rows = _fetch_twse_t86(date_str)
+            if rows:
+                return rows, d.strftime("%Y-%m-%d"), ""
+        except Exception as e:
+            last_error = str(e)
+
+    return [], None, f"官方法人資料抓取失敗：{last_error if 'last_error' in locals() else '查無資料'}"
+
+
+def _build_twse_rank(rows, top_n=20):
+    """
+    從 TWSE T86 資料中產生:
+    - foreign 外資排行
+    - invest 投信排行
+    """
+    foreign_result = []
+    invest_result = []
+
+    for row in rows:
+        stock_id = _safe_get(row, ["證券代號", "代號"])
+        name = _safe_get(row, ["證券名稱", "名稱"])
+
+        if not stock_id:
+            continue
+
+        # 外資（不含外資自營商）淨買賣超
+        foreign_net = _to_int(_safe_get(row, [
+            "外陸資買賣超股數(不含外資自營商)",
+            "外資及陸資(不含外資自營商)買賣超股數",
+            "外資及陸資買賣超股數(不含外資自營商)",
+        ]))
+
+        # 投信淨買賣超
+        invest_net = _to_int(_safe_get(row, [
+            "投信買賣超股數",
+            "投信買賣超股數(總)",
+        ]))
+
+        foreign_result.append({
+            "stock_id": str(stock_id),
+            "name": str(name),
+            "buy_sell": foreign_net
+        })
+
+        invest_result.append({
+            "stock_id": str(stock_id),
+            "name": str(name),
+            "buy_sell": invest_net
+        })
+
+    # 只保留淨買超 > 0
+    foreign_result = [x for x in foreign_result if x["buy_sell"] > 0]
+    invest_result = [x for x in invest_result if x["buy_sell"] > 0]
+
+    # 排序
+    foreign_result.sort(key=lambda x: x["buy_sell"], reverse=True)
+    invest_result.sort(key=lambda x: x["buy_sell"], reverse=True)
+
+    return foreign_result[:top_n], invest_result[:top_n]
+
+
 def get_funds_rank(top_n=20):
-    df, err = fetch_raw_funds_df(lookback_days=10)
+    """
+    回傳格式保持與你目前前端相容:
+    {
+      "foreign": [...],
+      "invest": [...],
+      "message": ""
+    }
+    """
+    rows, latest_date, err = _find_latest_available_rows(lookback_days=10)
 
     if err:
         return {
@@ -115,50 +168,17 @@ def get_funds_rank(top_n=20):
             "message": err
         }
 
-    required_cols = {"date", "name", "stock_id"}
-    if not required_cols.issubset(set(df.columns)):
+    if not rows:
         return {
             "foreign": [],
             "invest": [],
-            "message": f"法人資料格式不符，缺少必要欄位：{list(required_cols)}"
+            "message": "目前查無官方法人資料"
         }
 
-    df = df.copy()
-    df["date"] = pd.to_datetime(df["date"], errors="coerce")
-    df = df.dropna(subset=["date"])
-
-    if df.empty:
-        return {
-            "foreign": [],
-            "invest": [],
-            "message": "法人資料為空"
-        }
-
-    latest_date = df["date"].max()
-    df = df[df["date"] == latest_date].copy()
-
-    buy_col = find_buy_col(df)
-    if buy_col is None:
-        return {
-            "foreign": [],
-            "invest": [],
-            "message": "找不到法人買賣超欄位"
-        }
-
-    name_series = df["name"].astype(str)
-
-    # 外資 / 陸資
-    foreign_df = df[
-        name_series.str.contains("外資|陸資|foreign", case=False, na=False)
-    ].copy()
-
-    # 投信
-    invest_df = df[
-        name_series.str.contains("投信|investment", case=False, na=False)
-    ].copy()
+    foreign, invest = _build_twse_rank(rows, top_n=top_n)
 
     return {
-        "foreign": build_rank(foreign_df, buy_col, top_n=top_n),
-        "invest": build_rank(invest_df, buy_col, top_n=top_n),
-        "message": ""
+        "foreign": foreign,
+        "invest": invest,
+        "message": f"資料來源：TWSE 官方三大法人買賣超日報，最新交易日 {latest_date}"
     }
