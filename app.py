@@ -4,6 +4,8 @@ import pandas as pd
 from funds import get_funds_rank
 
 app = Flask(__name__)
+app.config['JSON_AS_ASCII'] = False
+
 CORS(app)
 
 
