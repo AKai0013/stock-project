@@ -1,6 +1,7 @@
 flask
+flask-cors
 pandas
 yfinance
 FinMind
 gunicorn
-flask-cors
+tqdm
