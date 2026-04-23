@@ -36,13 +36,13 @@ def get_api():
         return None
 
 
-def get_funds_rank(days=3, top_n=20):
+def fetch_raw_funds_df(lookback_days=10):
     api = get_api()
     if api is None:
-        return {"foreign": [], "invest": []}
+        return None, "api init failed"
 
     end_date = datetime.today().date()
-    start_date = end_date - timedelta(days=10)
+    start_date = end_date - timedelta(days=lookback_days)
 
     try:
         df = api.taiwan_stock_institutional_investors(
@@ -50,48 +50,116 @@ def get_funds_rank(days=3, top_n=20):
             end_date=str(end_date)
         )
     except Exception as e:
-        print("FinMind fetch failed:", e)
-        return {"foreign": [], "invest": []}
+        return None, f"FinMind fetch failed: {e}"
 
     if df is None or df.empty:
+        return None, "FinMind returned empty dataframe"
+
+    return df.copy(), None
+
+
+def find_buy_col(df):
+    candidates = [
+        "buy_sell",
+        "buy_sell_difference",
+        "buy_sell_diff",
+        "net_buy_sell",
+    ]
+
+    for col in candidates:
+        if col in df.columns:
+            return col
+
+    for col in df.columns:
+        if "buy" in str(col).lower():
+            return col
+
+    return None
+
+
+def get_funds_debug():
+    df, err = fetch_raw_funds_df(lookback_days=10)
+    if err:
+        return {
+            "error": err,
+            "columns": [],
+            "sample_rows": [],
+            "unique_names": [],
+            "buy_col": None,
+            "latest_date": None,
+        }
+
+    if "date" in df.columns:
+        df["date"] = pd.to_datetime(df["date"], errors="coerce")
+        latest_date = str(df["date"].max())
+    else:
+        latest_date = None
+
+    unique_names = []
+    if "name" in df.columns:
+        unique_names = sorted(df["name"].astype(str).dropna().unique().tolist())
+
+    buy_col = find_buy_col(df)
+
+    sample_rows = df.head(20).fillna("").to_dict(orient="records")
+
+    return {
+        "error": None,
+        "columns": df.columns.tolist(),
+        "sample_rows": sample_rows,
+        "unique_names": unique_names,
+        "buy_col": buy_col,
+        "latest_date": latest_date,
+    }
+
+
+def get_funds_rank(top_n=20):
+    df, err = fetch_raw_funds_df(lookback_days=10)
+    if err:
+        print(err)
         return {"foreign": [], "invest": []}
 
-    # 👉 轉時間
-    df["date"] = pd.to_datetime(df["date"])
-    latest_date = df["date"].max()
+    if "date" not in df.columns or "name" not in df.columns or "stock_id" not in df.columns:
+        print("missing required columns:", df.columns.tolist())
+        return {"foreign": [], "invest": []}
 
-    # 👉 只抓最新一天
+    df["date"] = pd.to_datetime(df["date"], errors="coerce")
+    df = df.dropna(subset=["date"])
+
+    if df.empty:
+        return {"foreign": [], "invest": []}
+
+    latest_date = df["date"].max()
     df = df[df["date"] == latest_date].copy()
 
-    # 👉 找買賣超欄位
-    buy_col = None
-    for col in df.columns:
-        if "buy" in col.lower():
-            buy_col = col
-
+    buy_col = find_buy_col(df)
     if buy_col is None:
-        print("找不到買賣超欄位")
+        print("cannot find buy/sell column:", df.columns.tolist())
         return {"foreign": [], "invest": []}
 
-    # 🔥🔥🔥 關鍵：用中文抓法人
-    foreign_df = df[df["name"].astype(str).str.contains("外資|陸資", na=False)]
-    invest_df = df[df["name"].astype(str).str.contains("投信", na=False)]
+    # 先用最寬鬆的方式抓
+    foreign_df = df[df["name"].astype(str).str.contains("外資|陸資|foreign", case=False, na=False)].copy()
+    invest_df = df[df["name"].astype(str).str.contains("投信|investment", case=False, na=False)].copy()
 
-    def build_rank(d):
-        if d.empty:
+    def build_rank(sub_df):
+        if sub_df.empty:
             return []
 
-        r = (
-            d.groupby("stock_id")[buy_col]
+        grouped = (
+            sub_df.groupby("stock_id", as_index=False)[buy_col]
             .sum()
-            .sort_values(ascending=False)
+            .sort_values(buy_col, ascending=False)
             .head(top_n)
+            .reset_index(drop=True)
         )
 
-        return [
-            {"stock_id": i, "buy_sell": int(v)}
-            for i, v in r.items()
-        ]
+        result = []
+        for _, row in grouped.iterrows():
+            result.append({
+                "stock_id": str(row["stock_id"]),
+                "buy_sell": int(row[buy_col]) if pd.notna(row[buy_col]) else 0
+            })
+        return result
 
     return {
         "foreign": build_rank(foreign_df),
