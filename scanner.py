@@ -1,7 +1,10 @@
 import os
 import time
 import random
+from io import StringIO
+
 import pandas as pd
+import requests
 import yfinance as yf
 
 DATA_DIR = "data"
@@ -15,9 +18,22 @@ def ensure_data_dir():
 
 def get_twse_stock_list():
     url = "https://isin.twse.com.tw/isin/C_public.jsp?strMode=2"
-    tables = pd.read_html(url)
-    df = tables[0]
 
+    headers = {
+        "User-Agent": "Mozilla/5.0"
+    }
+
+    # 先自己抓，再指定編碼
+    resp = requests.get(url, headers=headers, timeout=30)
+    resp.raise_for_status()
+
+    # 證交所這頁常見是 big5 系列
+    resp.encoding = "big5"
+
+    html_text = resp.text
+    tables = pd.read_html(StringIO(html_text), flavor="lxml")
+
+    df = tables[0]
     df.columns = df.iloc[0]
     df = df[1:].copy()
 
@@ -90,9 +106,11 @@ def classify_stock(df: pd.DataFrame):
     if None in [ma5, ma10, ma20, vol_ma5, vol_ma20]:
         return None
 
+    # 趨勢穩健
     if close > ma5 > ma10 > ma20 and volume >= vol_ma20 * 0.9:
         return "trend"
 
+    # 蓄勢待發
     recent_high = recent_10["High"].max()
     recent_low = recent_10["Low"].min()
     volatility_ratio = (recent_high - recent_low) / close if close > 0 else 999
@@ -102,6 +120,7 @@ def classify_stock(df: pd.DataFrame):
     if near_ma20 and volatility_ratio < 0.08 and volume_expand:
         return "setup"
 
+    # 反轉雷達
     prev_close = float(prev["Close"])
     prev_ma20 = float(prev["MA20"]) if pd.notna(prev["MA20"]) else None
     if prev_ma20 is not None:

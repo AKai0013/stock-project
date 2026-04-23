@@ -7,3 +7,4 @@ gunicorn
 tqdm
 lxml
 html5lib
+requests
