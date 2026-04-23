@@ -1,0 +1,11 @@
+<h1>法人排行榜</h1>
+
+<h2>外資</h2>
+{% for s in foreign %}
+<p>{{ s.stock_id }} - {{ s.buy_sell }}</p>
+{% endfor %}
+
+<h2>投信</h2>
+{% for s in invest %}
+<p>{{ s.stock_id }} - {{ s.buy_sell }}</p>
+{% endfor %}
