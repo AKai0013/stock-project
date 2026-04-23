@@ -3,6 +3,7 @@ const API_BASE = "https://stock-project-bnio.onrender.com";
 const state = {
   stocks: { trend: [], setup: [], reversal: [] },
   funds: { foreign: [], invest: [], message: "" },
+  strong: { strong: [], message: "" },
   currentView: "dashboard",
   search: "",
   sort: "stock-asc",
@@ -37,9 +38,10 @@ async function loadAll() {
   setStatus(false, "連線中...");
 
   try {
-    const [stocksRes, fundsRes] = await Promise.all([
+    const [stocksRes, fundsRes, strongRes] = await Promise.all([
       fetch(`${API_BASE}/api/stocks`),
       fetch(`${API_BASE}/api/funds`).catch(() => null),
+      fetch(`${API_BASE}/api/strong`).catch(() => null),
     ]);
 
     if (!stocksRes.ok) throw new Error("股票 API 讀取失敗");
@@ -50,6 +52,12 @@ async function loadAll() {
       state.funds = await fundsRes.json();
     } else {
       state.funds = { foreign: [], invest: [], message: "法人 API 讀取失敗" };
+    }
+
+    if (strongRes && strongRes.ok) {
+      state.strong = await strongRes.json();
+    } else {
+      state.strong = { strong: [], message: "主力＋趨勢 API 讀取失敗" };
     }
 
     updateSummary();
@@ -186,9 +194,19 @@ function renderCurrentView() {
       $("#tableInvest").innerHTML = createFundTable(invest, "投信");
     }
   } else if (state.currentView === "strong") {
-    const rows = buildStrongRows();
+    const rows = processStrongRows(state.strong.strong || []);
     $("#resultBadge").textContent = `${rows.length} 筆`;
-    $("#tableStrong").innerHTML = createStrongTable(rows);
+
+    if (state.strong.message && rows.length === 0) {
+      $("#tableStrong").innerHTML = `
+        <div class="notice-card">
+          <div class="notice-title">主力＋趨勢資料目前不可用</div>
+          <div class="notice-text">${state.strong.message}</div>
+        </div>
+      `;
+    } else {
+      $("#tableStrong").innerHTML = createStrongTable(rows);
+    }
   } else {
     const total =
       (state.stocks.trend?.length || 0) +
@@ -197,33 +215,6 @@ function renderCurrentView() {
 
     $("#resultBadge").textContent = `${total} 筆`;
   }
-}
-
-function buildStrongRows() {
-  const trendRows = state.stocks.trend || [];
-  const foreignIds = new Set((state.funds.foreign || []).map(x => String(x.stock_id)));
-  const investIds = new Set((state.funds.invest || []).map(x => String(x.stock_id)));
-
-  let rows = trendRows.filter(row => {
-    const id = String(row.StockID || "");
-    return foreignIds.has(id) || investIds.has(id);
-  }).map(row => {
-    const id = String(row.StockID || "");
-    return {
-      ...row,
-      hasForeign: foreignIds.has(id),
-      hasInvest: investIds.has(id),
-    };
-  });
-
-  if (state.search) {
-    rows = rows.filter((row) =>
-      String(row.StockID || row.Stock || "").toUpperCase().includes(state.search)
-    );
-  }
-
-  rows.sort((a, b) => Number(b.ChangePct || 0) - Number(a.ChangePct || 0));
-  return rows;
 }
 
 function processRows(rows) {
@@ -281,6 +272,19 @@ function processFundRows(rows) {
   return result;
 }
 
+function processStrongRows(rows) {
+  let result = [...(rows || [])];
+
+  if (state.search) {
+    result = result.filter((row) =>
+      String(row.StockID || row.Stock || "").toUpperCase().includes(state.search)
+    );
+  }
+
+  result.sort((a, b) => Number(b.ChangePct || 0) - Number(a.ChangePct || 0));
+  return result;
+}
+
 function createStockTable(rows, type) {
   if (!rows.length) return '<div class="empty-state">沒有符合條件的股票</div>';
 
@@ -328,6 +332,33 @@ function createStockTable(rows, type) {
   `;
 }
 
+function createFundTable(rows, label) {
+  if (!rows.length) {
+    return '<div class="empty-state">目前沒有法人資料</div>';
+  }
+
+  return `
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>股票代碼</th>
+            <th>${label}買賣超</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${rows.map((row, index) => `
+            <tr>
+              <td>#${index + 1}　${row.stock_id || "-"}</td>
+              <td>${safeNum(row.buy_sell)}</td>
+            </tr>
+          `).join("")}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
 function createStrongTable(rows) {
   if (!rows.length) {
     return '<div class="empty-state">目前沒有「主力＋趨勢」交集資料</div>';
@@ -357,33 +388,6 @@ function createStrongTable(rows) {
               <td>${row.hasForeign ? "✓" : "-"}</td>
               <td>${row.hasInvest ? "✓" : "-"}</td>
               <td>${safeNum(row.Volume)}</td>
-            </tr>
-          `).join("")}
-        </tbody>
-      </table>
-    </div>
-  `;
-}
-
-function createFundTable(rows, label) {
-  if (!rows.length) {
-    return '<div class="empty-state">目前沒有法人資料</div>';
-  }
-
-  return `
-    <div class="table-wrap">
-      <table>
-        <thead>
-          <tr>
-            <th>股票代碼</th>
-            <th>${label}買賣超</th>
-          </tr>
-        </thead>
-        <tbody>
-          ${rows.map((row, index) => `
-            <tr>
-              <td>#${index + 1}　${row.stock_id || "-"}</td>
-              <td>${safeNum(row.buy_sell)}</td>
             </tr>
           `).join("")}
         </tbody>
