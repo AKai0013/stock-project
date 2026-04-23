@@ -1,3 +1,3 @@
-Stock,Close,Volume
-2382.TW,85,12000
-3037.TW,199,8700
+Stock,StockID,Name,Close,Change,ChangePct,Volume
+2382.TW,2382,廣達,85,1.2,1.43,12000
+3037.TW,3037,欣興,199,-2,-1,8700
