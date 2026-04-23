@@ -1,7 +1,9 @@
 from flask import Flask, jsonify
+from flask_cors import CORS
 import pandas as pd
 
 app = Flask(__name__)
+CORS(app)
 
 def load(file):
     try:
@@ -19,6 +21,13 @@ def stocks():
         "trend": load("data/trend.csv"),
         "setup": load("data/setup.csv"),
         "reversal": load("data/reversal.csv")
+    })
+
+@app.route("/api/funds")
+def funds():
+    return jsonify({
+        "foreign": [],
+        "invest": []
     })
 
 if __name__ == "__main__":
