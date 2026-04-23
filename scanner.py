@@ -8,7 +8,7 @@ import requests
 import yfinance as yf
 
 DATA_DIR = "data"
-MAX_STOCKS = None
+MAX_STOCKS = None          # 全掃；要測試可改 500
 SLEEP_SECONDS = 0.08
 MIN_PRICE = 20
 MIN_AVG_VOLUME = 300000
@@ -23,7 +23,7 @@ def is_tw_etf(stock_id: str, asset_type: str) -> bool:
     stock_id = str(stock_id).strip()
     asset_type = str(asset_type).strip().upper()
 
-    # 台灣 ETF 代碼幾乎都以 00 開頭，例如 0050, 006208, 00713
+    # 台灣 ETF 常見規則：00 開頭
     if stock_id.startswith("00"):
         return True
 
@@ -31,6 +31,32 @@ def is_tw_etf(stock_id: str, asset_type: str) -> bool:
         return True
 
     return False
+
+
+def flatten_yfinance_columns(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+
+    if isinstance(df.columns, pd.MultiIndex):
+        new_cols = []
+        for col in df.columns:
+            parts = [str(x) for x in col if x not in [None, ""]]
+
+            target = None
+            for p in parts:
+                if p in ["Open", "High", "Low", "Close", "Adj Close", "Volume"]:
+                    target = p
+                    break
+
+            if target is None:
+                target = parts[-1]
+
+            new_cols.append(target)
+
+        df.columns = new_cols
+    else:
+        df.columns = [str(c) for c in df.columns]
+
+    return df
 
 
 def get_twse_stock_list():
@@ -71,47 +97,32 @@ def get_twse_stock_list():
     df["stock_id"] = split_col[0].astype(str).str.strip()
     df["stock_name"] = split_col[1].astype(str).str.strip() if split_col.shape[1] > 1 else ""
 
-    # 保留 4~6 碼，ETF 可能有 5 或 6 碼
+    # 只保留數字代碼
     df = df[df["stock_id"].str.match(r"^\d{4,6}$", na=False)].copy()
 
+    # 一般股票：4碼
+    is_stock_code = df["stock_id"].str.match(r"^\d{4}$", na=False)
+
+    # ETF：通常 00 開頭，可能 4~6 碼
+    is_etf_code = df["stock_id"].str.match(r"^00\d{2,4}$", na=False)
+
+    # 只保留一般股票 + ETF
+    df = df[is_stock_code | is_etf_code].copy()
+
+    # 補上商品類型
     df["asset_type"] = df[type_col].astype(str).str.strip() if type_col is not None else "未知"
     df["is_etf"] = df.apply(lambda r: is_tw_etf(r["stock_id"], r["asset_type"]), axis=1)
     df["yf_symbol"] = df["stock_id"] + ".TW"
 
     result = df[["stock_id", "stock_name", "asset_type", "is_etf", "yf_symbol"]].drop_duplicates().reset_index(drop=True)
 
-    print("抓到股票+ETF數量:", len(result))
-    print(result.head(10).to_dict("records"))
+    print("抓到可掃描股票+ETF數量:", len(result))
+    print(result.head(20).to_dict("records"))
+
     return result
 
 
-def flatten_yfinance_columns(df: pd.DataFrame) -> pd.DataFrame:
-    df = df.copy()
-
-    if isinstance(df.columns, pd.MultiIndex):
-        new_cols = []
-        for col in df.columns:
-            parts = [str(x) for x in col if x not in [None, ""]]
-
-            target = None
-            for p in parts:
-                if p in ["Open", "High", "Low", "Close", "Adj Close", "Volume"]:
-                    target = p
-                    break
-
-            if target is None:
-                target = parts[-1]
-
-            new_cols.append(target)
-
-        df.columns = new_cols
-    else:
-        df.columns = [str(c) for c in df.columns]
-
-    return df
-
-
-def download_stock_data(symbol):
+def download_stock_data(symbol: str):
     try:
         df = yf.download(
             symbol,
@@ -133,6 +144,7 @@ def download_stock_data(symbol):
 
         df = df[need].dropna().copy()
 
+        # 1年資料至少要有約 120~130 根日K
         if len(df) < 130:
             return None
 
@@ -155,7 +167,7 @@ def calc_rsi(series, period=14):
     return rsi.fillna(50)
 
 
-def add_indicators(df):
+def add_indicators(df: pd.DataFrame):
     df = df.copy()
 
     df["MA20"] = df["Close"].rolling(20).mean()
@@ -177,7 +189,7 @@ def add_indicators(df):
     return df
 
 
-def passes_basic_filters(df, is_etf):
+def passes_basic_filters(df: pd.DataFrame, is_etf: bool):
     last = df.iloc[-1]
 
     close = float(last["Close"])
@@ -186,6 +198,7 @@ def passes_basic_filters(df, is_etf):
     if close < MIN_PRICE:
         return False
 
+    # ETF 可以稍微放寬量能
     min_vol = 200000 if is_etf else MIN_AVG_VOLUME
     if vol20 < min_vol:
         return False
@@ -193,7 +206,7 @@ def passes_basic_filters(df, is_etf):
     return True
 
 
-def classify(df, is_etf):
+def classify(df: pd.DataFrame, is_etf: bool):
     if len(df) < 130:
         return None
 
@@ -221,6 +234,7 @@ def classify(df, is_etf):
     if not passes_basic_filters(df, is_etf):
         return None
 
+    # 趨勢穩健：中期多頭 + 接近高點 + 量能支持
     if (
         close > ma20 > ma60 > ma120 and
         close >= high20 * 0.98 and
@@ -230,6 +244,7 @@ def classify(df, is_etf):
     ):
         return "trend"
 
+    # 蓄勢待發：中期偏多、收斂、接近突破
     range_20 = (high20 - low20) / close if close > 0 else 999
     if (
         close > ma60 and
@@ -242,6 +257,7 @@ def classify(df, is_etf):
     ):
         return "setup"
 
+    # 反轉雷達：昨日在 MA20 下，今日站回 + 放量 + 漲幅
     if (
         prev_ma20 is not None and
         prev_close < prev_ma20 and
@@ -270,7 +286,7 @@ def make_row(stock_id, name, asset_type, is_etf, symbol, df):
 
     return {
         "Stock": symbol,
-        "StockID": str(stock_id),   # 關鍵：強制字串
+        "StockID": str(stock_id),
         "Name": name,
         "AssetType": asset_type,
         "IsETF": bool(is_etf),
@@ -301,7 +317,7 @@ def run():
 
     stocks = get_twse_stock_list()
 
-    if MAX_STOCKS:
+    if MAX_STOCKS is not None:
         stocks = stocks.head(MAX_STOCKS)
 
     trend, setup, reversal = [], [], []
