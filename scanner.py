@@ -8,7 +8,7 @@ import requests
 import yfinance as yf
 
 DATA_DIR = "data"
-MAX_STOCKS = 100   # 要全掃改成 None
+MAX_STOCKS = None  # 要全掃改成 None
 SLEEP_SECONDS = 0.15
 
 
