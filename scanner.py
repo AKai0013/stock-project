@@ -1,69 +1,243 @@
-import yfinance as yf
+import os
+import time
+import random
 import pandas as pd
+import yfinance as yf
 
-# 台股清單（先用幾檔測試）
-stocks = [
-    "2330.TW",
-    "2317.TW",
-    "2454.TW",
-    "2308.TW",
-    "2603.TW",
-    "3481.TW",
-    "2382.TW"
-]
 
-trend = []
-setup = []
-reversal = []
+DATA_DIR = "data"
+MAX_STOCKS = None   # 全部掃描；若要先測試可改成 100 或 200
+SLEEP_SECONDS = 0.15  # 每檔稍微停一下，避免請求太密
 
-for s in stocks:
+
+def ensure_data_dir():
+    os.makedirs(DATA_DIR, exist_ok=True)
+
+
+def get_twse_stock_list():
+    """
+    抓台灣上市股票清單（先不含 ETF / 上櫃）
+    回傳欄位：
+    - stock_id
+    - stock_name
+    - yf_symbol
+    """
+    url = "https://isin.twse.com.tw/isin/C_public.jsp?strMode=2"
+    tables = pd.read_html(url)
+    df = tables[0]
+
+    df.columns = df.iloc[0]
+    df = df[1:].copy()
+
+    # 只保留股票
+    df = df[df["有價證券別"] == "股票"].copy()
+
+    # 拆代碼和名稱
+    split_col = df["有價證券代號及名稱"].astype(str).str.split("　", n=1, expand=True)
+
+    # 有些資料不是全形空格，再補一次一般空格拆分
+    if split_col.shape[1] < 2:
+        split_col = df["有價證券代號及名稱"].astype(str).str.split(" ", n=1, expand=True)
+
+    df["stock_id"] = split_col[0].astype(str).str.strip()
+    df["stock_name"] = split_col[1].astype(str).str.strip() if split_col.shape[1] > 1 else ""
+
+    # 只保留四碼股票代號
+    df = df[df["stock_id"].str.match(r"^\\d{4}$", na=False)].copy()
+
+    # yfinance 台股代碼
+    df["yf_symbol"] = df["stock_id"] + ".TW"
+
+    result = df[["stock_id", "stock_name", "yf_symbol"]].drop_duplicates().reset_index(drop=True)
+    return result
+
+
+def download_stock_data(symbol: str, period: str = "6mo"):
+    """
+    下載單檔歷史資料
+    """
     try:
-        df = yf.download(s, period="3mo", interval="1d")
+        df = yf.download(
+            symbol,
+            period=period,
+            interval="1d",
+            auto_adjust=False,
+            progress=False,
+            threads=False
+        )
 
-        if len(df) < 20:
+        if df is None or df.empty:
+            return None
+
+        df = df.dropna().copy()
+        if len(df) < 25:
+            return None
+
+        return df
+    except Exception as e:
+        print(f"[下載失敗] {symbol}: {e}")
+        return None
+
+
+def add_indicators(df: pd.DataFrame):
+    """
+    加技術指標
+    """
+    out = df.copy()
+    out["MA5"] = out["Close"].rolling(5).mean()
+    out["MA10"] = out["Close"].rolling(10).mean()
+    out["MA20"] = out["Close"].rolling(20).mean()
+    out["VOL_MA5"] = out["Volume"].rolling(5).mean()
+    out["VOL_MA20"] = out["Volume"].rolling(20).mean()
+    return out
+
+
+def classify_stock(df: pd.DataFrame):
+    """
+    分成三種：
+    - trend: 趨勢穩健
+    - setup: 蓄勢待發
+    - reversal: 反轉雷達
+    回傳字串或 None
+    """
+    if df is None or len(df) < 25:
+        return None
+
+    latest = df.iloc[-1]
+    prev = df.iloc[-2]
+    recent_10 = df.iloc[-10:].copy()
+
+    close = float(latest["Close"])
+    ma5 = float(latest["MA5"]) if pd.notna(latest["MA5"]) else None
+    ma10 = float(latest["MA10"]) if pd.notna(latest["MA10"]) else None
+    ma20 = float(latest["MA20"]) if pd.notna(latest["MA20"]) else None
+    volume = float(latest["Volume"])
+    vol_ma5 = float(latest["VOL_MA5"]) if pd.notna(latest["VOL_MA5"]) else None
+    vol_ma20 = float(latest["VOL_MA20"]) if pd.notna(latest["VOL_MA20"]) else None
+
+    if None in [ma5, ma10, ma20, vol_ma5, vol_ma20]:
+        return None
+
+    # 1) 趨勢穩健：收盤 > MA5 > MA10 > MA20，且量能不弱
+    if close > ma5 > ma10 > ma20 and volume >= vol_ma20 * 0.9:
+        return "trend"
+
+    # 2) 蓄勢待發：股價貼近 MA20，近 10 日波動不大，今天量比 5 日均量放大
+    recent_high = recent_10["High"].max()
+    recent_low = recent_10["Low"].min()
+    volatility_ratio = (recent_high - recent_low) / close if close > 0 else 999
+    near_ma20 = abs(close - ma20) / ma20 < 0.03
+    volume_expand = volume > vol_ma5 * 1.2
+
+    if near_ma20 and volatility_ratio < 0.08 and volume_expand:
+        return "setup"
+
+    # 3) 反轉雷達：昨天在 MA20 下，今天站上 MA20，且量能放大
+    prev_close = float(prev["Close"])
+    prev_ma20 = float(prev["MA20"]) if pd.notna(prev["MA20"]) else None
+    if prev_ma20 is not None:
+        if prev_close < prev_ma20 and close > ma20 and volume > vol_ma5 * 1.1:
+            return "reversal"
+
+    return None
+
+
+def make_row(stock_id: str, stock_name: str, symbol: str, df: pd.DataFrame):
+    latest = df.iloc[-1]
+    prev = df.iloc[-2]
+
+    close = float(latest["Close"])
+    prev_close = float(prev["Close"])
+    change = close - prev_close
+    change_pct = (change / prev_close * 100) if prev_close != 0 else 0
+    volume = int(latest["Volume"])
+
+    return {
+        "Stock": symbol,
+        "StockID": stock_id,
+        "Name": stock_name,
+        "Close": round(close, 2),
+        "Change": round(change, 2),
+        "ChangePct": round(change_pct, 2),
+        "Volume": volume
+    }
+
+
+def save_csv(filename: str, rows: list):
+    path = os.path.join(DATA_DIR, filename)
+    columns = ["Stock", "StockID", "Name", "Close", "Change", "ChangePct", "Volume"]
+
+    if rows:
+        df = pd.DataFrame(rows)
+        for col in columns:
+            if col not in df.columns:
+                df[col] = None
+        df = df[columns]
+    else:
+        df = pd.DataFrame(columns=columns)
+
+    df.to_csv(path, index=False, encoding="utf-8-sig")
+
+
+def run_scan():
+    ensure_data_dir()
+
+    stock_df = get_twse_stock_list()
+
+    if MAX_STOCKS is not None:
+        stock_df = stock_df.head(MAX_STOCKS).copy()
+
+    total = len(stock_df)
+    print(f"開始掃描，共 {total} 檔")
+
+    trend_rows = []
+    setup_rows = []
+    reversal_rows = []
+
+    success_count = 0
+    skip_count = 0
+
+    for idx, row in stock_df.iterrows():
+        stock_id = row["stock_id"]
+        stock_name = row["stock_name"]
+        symbol = row["yf_symbol"]
+
+        print(f"[{idx + 1}/{total}] 掃描 {stock_id} {stock_name} ({symbol})")
+
+        df = download_stock_data(symbol, period="6mo")
+        if df is None:
+            skip_count += 1
             continue
 
-        df["MA5"] = df["Close"].rolling(5).mean()
-        df["MA20"] = df["Close"].rolling(20).mean()
+        df = add_indicators(df)
+        category = classify_stock(df)
 
-        latest = df.iloc[-1]
+        if category is not None:
+            item = make_row(stock_id, stock_name, symbol, df)
 
-        close = float(latest["Close"])
-        volume = int(latest["Volume"])
+            if category == "trend":
+                trend_rows.append(item)
+            elif category == "setup":
+                setup_rows.append(item)
+            elif category == "reversal":
+                reversal_rows.append(item)
 
-        ma5 = float(latest["MA5"])
-        ma20 = float(latest["MA20"])
+        success_count += 1
+        time.sleep(SLEEP_SECONDS + random.uniform(0, 0.05))
 
-        # 趨勢股（多頭）
-        if close > ma5 > ma20:
-            trend.append({
-                "Stock": s,
-                "Close": round(close, 2),
-                "Volume": volume
-            })
+    save_csv("trend.csv", trend_rows)
+    save_csv("setup.csv", setup_rows)
+    save_csv("reversal.csv", reversal_rows)
 
-        # 蓄勢股（接近均線）
-        elif abs(close - ma20) / ma20 < 0.03:
-            setup.append({
-                "Stock": s,
-                "Close": round(close, 2),
-                "Volume": volume
-            })
+    print("=" * 50)
+    print("掃描完成")
+    print(f"成功處理：{success_count}")
+    print(f"跳過/失敗：{skip_count}")
+    print(f"趨勢穩健：{len(trend_rows)}")
+    print(f"蓄勢待發：{len(setup_rows)}")
+    print(f"反轉雷達：{len(reversal_rows)}")
+    print("=" * 50)
 
-        # 反轉股（剛站上）
-        elif close > ma20:
-            reversal.append({
-                "Stock": s,
-                "Close": round(close, 2),
-                "Volume": volume
-            })
 
-    except Exception as e:
-        print("error:", s, e)
-
-# 輸出 CSV
-pd.DataFrame(trend).to_csv("data/trend.csv", index=False)
-pd.DataFrame(setup).to_csv("data/setup.csv", index=False)
-pd.DataFrame(reversal).to_csv("data/reversal.csv", index=False)
-
-print("完成掃描")
+if __name__ == "__main__":
+    run_scan()
