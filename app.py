@@ -2,7 +2,6 @@ from flask import Flask, jsonify
 from flask_cors import CORS
 import pandas as pd
 import json
-import os
 
 app = Flask(__name__)
 app.json.ensure_ascii = False
@@ -44,15 +43,23 @@ def stocks():
 
 @app.route("/api/funds")
 def funds():
-    foreign = load_csv("data/foreign.csv")
-    invest = load_csv("data/invest.csv")
-    meta = load_json("data/funds_meta.json", default={})
+    try:
+        foreign = load_csv("data/foreign.csv")
+        invest = load_csv("data/invest.csv")
+        meta = load_json("data/funds_meta.json", default={})
 
-    return jsonify({
-        "foreign": foreign,
-        "invest": invest,
-        "message": meta.get("message", "法人資料尚未建立")
-    })
+        return jsonify({
+            "foreign": foreign,
+            "invest": invest,
+            "message": meta.get("message", "法人資料尚未建立")
+        })
+    except Exception as e:
+        print("Funds route failed:", e)
+        return jsonify({
+            "foreign": [],
+            "invest": [],
+            "message": f"/api/funds 路由錯誤：{str(e)}"
+        }), 200
 
 
 @app.route("/api/strong")
@@ -143,28 +150,28 @@ def top10():
             return round(score, 2)
 
         for row in trend:
-            row = dict(row)
-            row["score"] = score_stock(row, "trend")
-            row["category"] = "trend"
-            row["hasForeign"] = str(row.get("StockID", "")) in foreign_ids
-            row["hasInvest"] = str(row.get("StockID", "")) in invest_ids
-            all_rows.append(row)
+            item = dict(row)
+            item["score"] = score_stock(item, "trend")
+            item["category"] = "trend"
+            item["hasForeign"] = str(item.get("StockID", "")) in foreign_ids
+            item["hasInvest"] = str(item.get("StockID", "")) in invest_ids
+            all_rows.append(item)
 
         for row in setup:
-            row = dict(row)
-            row["score"] = score_stock(row, "setup")
-            row["category"] = "setup"
-            row["hasForeign"] = str(row.get("StockID", "")) in foreign_ids
-            row["hasInvest"] = str(row.get("StockID", "")) in invest_ids
-            all_rows.append(row)
+            item = dict(row)
+            item["score"] = score_stock(item, "setup")
+            item["category"] = "setup"
+            item["hasForeign"] = str(item.get("StockID", "")) in foreign_ids
+            item["hasInvest"] = str(item.get("StockID", "")) in invest_ids
+            all_rows.append(item)
 
         for row in reversal:
-            row = dict(row)
-            row["score"] = score_stock(row, "reversal")
-            row["category"] = "reversal"
-            row["hasForeign"] = str(row.get("StockID", "")) in foreign_ids
-            row["hasInvest"] = str(row.get("StockID", "")) in invest_ids
-            all_rows.append(row)
+            item = dict(row)
+            item["score"] = score_stock(item, "reversal")
+            item["category"] = "reversal"
+            item["hasForeign"] = str(item.get("StockID", "")) in foreign_ids
+            item["hasInvest"] = str(item.get("StockID", "")) in invest_ids
+            all_rows.append(item)
 
         best_map = {}
         for row in all_rows:

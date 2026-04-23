@@ -4,6 +4,7 @@ const state = {
   stocks: { trend: [], setup: [], reversal: [] },
   funds: { foreign: [], invest: [], message: "" },
   strong: { strong: [], message: "" },
+  top10: { top10: [], message: "" },
   currentView: "dashboard",
   search: "",
   sort: "stock-asc",
@@ -38,10 +39,11 @@ async function loadAll() {
   setStatus(false, "連線中...");
 
   try {
-    const [stocksRes, fundsRes, strongRes] = await Promise.all([
+    const [stocksRes, fundsRes, strongRes, top10Res] = await Promise.all([
       fetch(`${API_BASE}/api/stocks`),
       fetch(`${API_BASE}/api/funds`).catch(() => null),
       fetch(`${API_BASE}/api/strong`).catch(() => null),
+      fetch(`${API_BASE}/api/top10`).catch(() => null),
     ]);
 
     if (!stocksRes.ok) throw new Error("股票 API 讀取失敗");
@@ -58,6 +60,12 @@ async function loadAll() {
       state.strong = await strongRes.json();
     } else {
       state.strong = { strong: [], message: "主力＋趨勢 API 讀取失敗" };
+    }
+
+    if (top10Res && top10Res.ok) {
+      state.top10 = await top10Res.json();
+    } else {
+      state.top10 = { top10: [], message: "最強10檔 API 讀取失敗" };
     }
 
     updateSummary();
@@ -207,6 +215,20 @@ function renderCurrentView() {
     } else {
       $("#tableStrong").innerHTML = createStrongTable(rows);
     }
+  } else if (state.currentView === "top10") {
+    const rows = processTop10Rows(state.top10.top10 || []);
+    $("#resultBadge").textContent = `${rows.length} 筆`;
+
+    if (state.top10.message && rows.length === 0) {
+      $("#tableTop10").innerHTML = `
+        <div class="notice-card">
+          <div class="notice-title">最強10檔資料目前不可用</div>
+          <div class="notice-text">${state.top10.message}</div>
+        </div>
+      `;
+    } else {
+      $("#tableTop10").innerHTML = createTop10Table(rows);
+    }
   } else {
     const total =
       (state.stocks.trend?.length || 0) +
@@ -282,6 +304,19 @@ function processStrongRows(rows) {
   }
 
   result.sort((a, b) => Number(b.ChangePct || 0) - Number(a.ChangePct || 0));
+  return result;
+}
+
+function processTop10Rows(rows) {
+  let result = [...(rows || [])];
+
+  if (state.search) {
+    result = result.filter((row) =>
+      String(row.StockID || row.Stock || "").toUpperCase().includes(state.search)
+    );
+  }
+
+  result.sort((a, b) => Number(b.score || 0) - Number(a.score || 0));
   return result;
 }
 
@@ -388,6 +423,45 @@ function createStrongTable(rows) {
               <td>${row.hasForeign ? "✓" : "-"}</td>
               <td>${row.hasInvest ? "✓" : "-"}</td>
               <td>${safeNum(row.Volume)}</td>
+            </tr>
+          `).join("")}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+function createTop10Table(rows) {
+  if (!rows.length) {
+    return '<div class="empty-state">目前沒有最強10檔資料</div>';
+  }
+
+  return `
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>排名</th>
+            <th>股票代碼</th>
+            <th>名稱</th>
+            <th>分類</th>
+            <th>分數</th>
+            <th>漲跌幅</th>
+            <th>外資</th>
+            <th>投信</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${rows.map((row, index) => `
+            <tr>
+              <td>#${index + 1}</td>
+              <td>${row.StockID || "-"}</td>
+              <td>${row.Name || "-"}</td>
+              <td>${row.category || "-"}</td>
+              <td>${safeNum(row.score)}</td>
+              <td class="${getChangeClass(row.ChangePct)}">${formatSigned(row.ChangePct)}%</td>
+              <td>${row.hasForeign ? "✓" : "-"}</td>
+              <td>${row.hasInvest ? "✓" : "-"}</td>
             </tr>
           `).join("")}
         </tbody>
