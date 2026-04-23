@@ -4,15 +4,15 @@ import pandas as pd
 from funds import get_funds_rank
 
 app = Flask(__name__)
-app.config['JSON_AS_ASCII'] = False
-
+app.json.ensure_ascii = False
 CORS(app)
 
 
 def load(file):
     try:
         return pd.read_csv(file).to_dict("records")
-    except Exception:
+    except Exception as e:
+        print("CSV load failed:", file, e)
         return []
 
 
