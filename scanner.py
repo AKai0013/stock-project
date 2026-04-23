@@ -83,24 +83,32 @@ def get_twse_stock_list():
 
 def flatten_yfinance_columns(df: pd.DataFrame) -> pd.DataFrame:
     """
-    把 yfinance 可能回傳的 MultiIndex 欄位攤平成單層。
-    只保留最後一層常用欄位名：Open / High / Low / Close / Adj Close / Volume
+    把 yfinance 回傳欄位整理成單層欄位：
+    目標一定是 Open / High / Low / Close / Adj Close / Volume
     """
+    df = df.copy()
+
     if isinstance(df.columns, pd.MultiIndex):
         new_cols = []
+
         for col in df.columns:
-            if isinstance(col, tuple):
-                # 通常最後一層會是 Open/High/Low/Close/Volume
-                if col[-1] not in [None, ""]:
-                    new_cols.append(str(col[-1]))
-                else:
-                    new_cols.append(str(col[0]))
-            else:
-                new_cols.append(str(col))
-        df = df.copy()
+            # col 可能像 ('Close', '2330.TW') 或 ('2330.TW', 'Close')
+            parts = [str(x) for x in col if x not in [None, ""]]
+
+            chosen = None
+            for p in parts:
+                if p in ["Open", "High", "Low", "Close", "Adj Close", "Volume"]:
+                    chosen = p
+                    break
+
+            if chosen is None:
+                chosen = parts[-1]
+
+            new_cols.append(chosen)
+
         df.columns = new_cols
+
     else:
-        df = df.copy()
         df.columns = [str(c) for c in df.columns]
 
     return df
@@ -114,25 +122,33 @@ def download_stock_data(symbol: str, period: str = "6mo"):
             interval="1d",
             auto_adjust=False,
             progress=False,
-            threads=False,
-            group_by="column"
+            threads=False
         )
 
         if df is None or df.empty:
+            print(f"[無資料] {symbol}")
             return None
 
         df = flatten_yfinance_columns(df)
-        df = df.dropna().copy()
+
+        # 只保留我們需要的欄位
+        keep_cols = ["Open", "High", "Low", "Close", "Adj Close", "Volume"]
+        available_cols = [c for c in keep_cols if c in df.columns]
+        df = df[available_cols].copy()
 
         required_cols = ["Open", "High", "Low", "Close", "Volume"]
         if not all(col in df.columns for col in required_cols):
             print(f"[欄位不足] {symbol}: {df.columns.tolist()}")
             return None
 
+        df = df.dropna(subset=["Open", "High", "Low", "Close", "Volume"]).copy()
+
         if len(df) < 25:
+            print(f"[資料不足] {symbol}: {len(df)} rows")
             return None
 
         return df
+
     except Exception as e:
         print(f"[下載失敗] {symbol}: {e}")
         return None
