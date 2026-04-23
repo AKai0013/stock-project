@@ -1,4 +1,1 @@
-Stock,StockID,Name,Close,Change,ChangePct,Volume
-2330.TW,2330,台積電,950,12,1.28,32000
-2454.TW,2454,聯發科,1180,-15,-1.26,15000
-2317.TW,2317,鴻海,210,3,1.45,28000
+﻿Stock,StockID,Name,Close,Change,ChangePct,Volume
