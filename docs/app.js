@@ -90,12 +90,12 @@ function updateSummary() {
 }
 
 function renderDashboard() {
-  renderMiniList("#previewTrend", state.stocks.trend);
-  renderMiniList("#previewSetup", state.stocks.setup);
-  renderMiniList("#previewReversal", state.stocks.reversal);
+  renderMiniList("#previewTrend", state.stocks.trend, "trend");
+  renderMiniList("#previewSetup", state.stocks.setup, "setup");
+  renderMiniList("#previewReversal", state.stocks.reversal, "reversal");
 }
 
-function renderMiniList(selector, rows) {
+function renderMiniList(selector, rows, type) {
   const el = $(selector);
   const list = (rows || []).slice(0, 5);
 
@@ -104,14 +104,38 @@ function renderMiniList(selector, rows) {
     return;
   }
 
+  const badgeText = {
+    trend: "趨勢穩健",
+    setup: "蓄勢待發",
+    reversal: "反轉雷達",
+  }[type];
+
+  const badgeClass = {
+    trend: "pill-trend",
+    setup: "pill-setup",
+    reversal: "pill-reversal",
+  }[type];
+
   el.innerHTML = list.map((row) => `
-    <div class="mini-item">
-      <strong>${row.StockID || row.Stock || "-"} ${row.Name || ""}</strong>
-      <span>
-        價格：${safeNum(row.Close)}
-       　漲跌：<span class="${getChangeClass(row.Change)}">${formatSigned(row.Change)} (${formatSigned(row.ChangePct)}%)</span>
-       　成交量：${safeNum(row.Volume)}
-      </span>
+    <div class="mini-item stock-card">
+      <div class="stock-top">
+        <div>
+          <div class="stock-code">${row.StockID || row.Stock || "-"}</div>
+          <div class="stock-name">${row.Name || ""}</div>
+        </div>
+        <span class="pill ${badgeClass}">${badgeText}</span>
+      </div>
+
+      <div class="stock-price-line">
+        <span class="stock-price">${safeNum(row.Close)}</span>
+        <span class="stock-change ${getChangeClass(row.Change)}">
+          ${formatSigned(row.Change)} (${formatSigned(row.ChangePct)}%)
+        </span>
+      </div>
+
+      <div class="stock-meta">
+        <span>成交量：${safeNum(row.Volume)}</span>
+      </div>
     </div>
   `).join("");
 }
@@ -149,8 +173,14 @@ function renderCurrentView() {
     $("#resultBadge").textContent = `${foreign.length + invest.length} 筆`;
 
     if (state.funds.message && foreign.length === 0 && invest.length === 0) {
-      $("#tableForeign").innerHTML = `<div class="empty-state">${state.funds.message}</div>`;
-      $("#tableInvest").innerHTML = `<div class="empty-state">${state.funds.message}</div>`;
+      const html = `
+        <div class="notice-card">
+          <div class="notice-title">法人資料目前不可用</div>
+          <div class="notice-text">${state.funds.message}</div>
+        </div>
+      `;
+      $("#tableForeign").innerHTML = html;
+      $("#tableInvest").innerHTML = html;
     } else {
       $("#tableForeign").innerHTML = createFundTable(foreign, "外資");
       $("#tableInvest").innerHTML = createFundTable(invest, "投信");
@@ -181,6 +211,8 @@ function processRows(rows) {
     const closeB = Number(b.Close || 0);
     const volA = Number(a.Volume || 0);
     const volB = Number(b.Volume || 0);
+    const pctA = Number(a.ChangePct || 0);
+    const pctB = Number(b.ChangePct || 0);
 
     switch (state.sort) {
       case "stock-desc":
@@ -193,6 +225,10 @@ function processRows(rows) {
         return volB - volA;
       case "volume-asc":
         return volA - volB;
+      case "change-desc":
+        return pctB - pctA;
+      case "change-asc":
+        return pctA - pctB;
       default:
         return stockA.localeCompare(stockB);
     }
@@ -276,9 +312,9 @@ function createFundTable(rows, label) {
           </tr>
         </thead>
         <tbody>
-          ${rows.map((row) => `
+          ${rows.map((row, index) => `
             <tr>
-              <td>${row.stock_id || "-"}</td>
+              <td>#${index + 1}　${row.stock_id || "-"}</td>
               <td>${safeNum(row.buy_sell)}</td>
             </tr>
           `).join("")}
@@ -292,7 +328,7 @@ function getChangeClass(v) {
   const n = Number(v || 0);
   if (n > 0) return "up";
   if (n < 0) return "down";
-  return "";
+  return "flat";
 }
 
 function formatSigned(v) {
