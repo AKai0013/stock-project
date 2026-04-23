@@ -5,21 +5,35 @@ import os
 
 FINMIND_TOKEN = os.getenv("FINMIND_TOKEN", "")
 
-api = None
+_api = None
+_api_ready = False
 
-try:
-    api = DataLoader()
-    if FINMIND_TOKEN:
-        try:
-            api.login_by_token(api_token=FINMIND_TOKEN)
-            print("FinMind token login success")
-        except Exception as e:
-            print("FinMind token login failed:", e)
-    else:
-        print("FINMIND_TOKEN is empty")
-except Exception as e:
-    print("FinMind DataLoader init failed:", e)
-    api = None
+
+def get_api():
+    global _api, _api_ready
+
+    if _api_ready and _api is not None:
+        return _api
+
+    try:
+        api = DataLoader()
+
+        if FINMIND_TOKEN:
+            try:
+                api.login_by_token(api_token=FINMIND_TOKEN)
+                print("FinMind token login success")
+            except Exception as e:
+                print("FinMind token login failed:", e)
+        else:
+            print("FINMIND_TOKEN is empty")
+
+        _api = api
+        _api_ready = True
+        return _api
+
+    except Exception as e:
+        print("FinMind DataLoader init failed:", e)
+        return None
 
 
 def _normalize_name(name):
@@ -49,6 +63,7 @@ def _pick_date_column(df):
 
 
 def get_funds_rank(days=1, top_n=20):
+    api = get_api()
     if api is None:
         return {"foreign": [], "invest": []}
 
