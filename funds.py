@@ -76,10 +76,33 @@ def find_buy_col(df):
             return col
 
     for col in df.columns:
-        if "buy" in str(col).lower():
+        col_str = str(col).lower()
+        if "buy" in col_str:
             return col
 
     return None
+
+
+def build_rank(sub_df, buy_col, top_n=20):
+    if sub_df is None or sub_df.empty:
+        return []
+
+    grouped = (
+        sub_df.groupby("stock_id", as_index=False)[buy_col]
+        .sum()
+        .sort_values(buy_col, ascending=False)
+        .head(top_n)
+        .reset_index(drop=True)
+    )
+
+    result = []
+    for _, row in grouped.iterrows():
+        result.append({
+            "stock_id": str(row.get("stock_id", "")),
+            "buy_sell": int(row[buy_col]) if pd.notna(row[buy_col]) else 0
+        })
+
+    return result
 
 
 def get_funds_rank(top_n=20):
@@ -92,13 +115,15 @@ def get_funds_rank(top_n=20):
             "message": err
         }
 
-    if "date" not in df.columns or "name" not in df.columns or "stock_id" not in df.columns:
+    required_cols = {"date", "name", "stock_id"}
+    if not required_cols.issubset(set(df.columns)):
         return {
             "foreign": [],
             "invest": [],
-            "message": "法人資料格式不符，缺少必要欄位"
+            "message": f"法人資料格式不符，缺少必要欄位：{list(required_cols)}"
         }
 
+    df = df.copy()
     df["date"] = pd.to_datetime(df["date"], errors="coerce")
     df = df.dropna(subset=["date"])
 
@@ -120,31 +145,20 @@ def get_funds_rank(top_n=20):
             "message": "找不到法人買賣超欄位"
         }
 
-    foreign_df = df[df["name"].astype(str).str.contains("外資|陸資|foreign", case=False, na=False)].copy()
-    invest_df = df[df["name"].astype(str).str.contains("投信|investment", case=False, na=False)].copy()
+    name_series = df["name"].astype(str)
 
-    def build_rank(sub_df):
-        if sub_df.empty:
-            return []
+    # 外資 / 陸資
+    foreign_df = df[
+        name_series.str.contains("外資|陸資|foreign", case=False, na=False)
+    ].copy()
 
-        grouped = (
-            sub_df.groupby("stock_id", as_index=False)[buy_col]
-            .sum()
-            .sort_values(buy_col, ascending=False)
-            .head(top_n)
-            .reset_index(drop=True)
-        )
-
-        result = []
-        for _, row in grouped.iterrows():
-            result.append({
-                "stock_id": str(row["stock_id"]),
-                "buy_sell": int(row[buy_col]) if pd.notna(row[buy_col]) else 0
-            })
-        return result
+    # 投信
+    invest_df = df[
+        name_series.str.contains("投信|investment", case=False, na=False)
+    ].copy()
 
     return {
-        "foreign": build_rank(foreign_df),
-        "invest": build_rank(invest_df),
+        "foreign": build_rank(foreign_df, buy_col, top_n=top_n),
+        "invest": build_rank(invest_df, buy_col, top_n=top_n),
         "message": ""
     }
