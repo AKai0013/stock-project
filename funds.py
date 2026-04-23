@@ -39,7 +39,7 @@ def get_api():
 def fetch_raw_funds_df(lookback_days=10):
     api = get_api()
     if api is None:
-        return None, "api init failed"
+        return None, "FinMind 初始化失敗"
 
     end_date = datetime.today().date()
     start_date = end_date - timedelta(days=lookback_days)
@@ -50,10 +50,15 @@ def fetch_raw_funds_df(lookback_days=10):
             end_date=str(end_date)
         )
     except Exception as e:
-        return None, f"FinMind fetch failed: {e}"
+        err_msg = str(e)
+
+        if "Your level is register" in err_msg:
+            return None, "目前 FinMind 帳號等級不足，法人資料尚未開通"
+
+        return None, f"FinMind 抓取失敗：{err_msg}"
 
     if df is None or df.empty:
-        return None, "FinMind returned empty dataframe"
+        return None, "目前查無法人資料"
 
     return df.copy(), None
 
@@ -77,67 +82,44 @@ def find_buy_col(df):
     return None
 
 
-def get_funds_debug():
-    df, err = fetch_raw_funds_df(lookback_days=10)
-    if err:
-        return {
-            "error": err,
-            "columns": [],
-            "sample_rows": [],
-            "unique_names": [],
-            "buy_col": None,
-            "latest_date": None,
-        }
-
-    if "date" in df.columns:
-        df["date"] = pd.to_datetime(df["date"], errors="coerce")
-        latest_date = str(df["date"].max())
-    else:
-        latest_date = None
-
-    unique_names = []
-    if "name" in df.columns:
-        unique_names = sorted(df["name"].astype(str).dropna().unique().tolist())
-
-    buy_col = find_buy_col(df)
-
-    sample_rows = df.head(20).fillna("").to_dict(orient="records")
-
-    return {
-        "error": None,
-        "columns": df.columns.tolist(),
-        "sample_rows": sample_rows,
-        "unique_names": unique_names,
-        "buy_col": buy_col,
-        "latest_date": latest_date,
-    }
-
-
 def get_funds_rank(top_n=20):
     df, err = fetch_raw_funds_df(lookback_days=10)
+
     if err:
-        print(err)
-        return {"foreign": [], "invest": []}
+        return {
+            "foreign": [],
+            "invest": [],
+            "message": err
+        }
 
     if "date" not in df.columns or "name" not in df.columns or "stock_id" not in df.columns:
-        print("missing required columns:", df.columns.tolist())
-        return {"foreign": [], "invest": []}
+        return {
+            "foreign": [],
+            "invest": [],
+            "message": "法人資料格式不符，缺少必要欄位"
+        }
 
     df["date"] = pd.to_datetime(df["date"], errors="coerce")
     df = df.dropna(subset=["date"])
 
     if df.empty:
-        return {"foreign": [], "invest": []}
+        return {
+            "foreign": [],
+            "invest": [],
+            "message": "法人資料為空"
+        }
 
     latest_date = df["date"].max()
     df = df[df["date"] == latest_date].copy()
 
     buy_col = find_buy_col(df)
     if buy_col is None:
-        print("cannot find buy/sell column:", df.columns.tolist())
-        return {"foreign": [], "invest": []}
+        return {
+            "foreign": [],
+            "invest": [],
+            "message": "找不到法人買賣超欄位"
+        }
 
-    # 先用最寬鬆的方式抓
     foreign_df = df[df["name"].astype(str).str.contains("外資|陸資|foreign", case=False, na=False)].copy()
     invest_df = df[df["name"].astype(str).str.contains("投信|investment", case=False, na=False)].copy()
 
@@ -164,4 +146,5 @@ def get_funds_rank(top_n=20):
     return {
         "foreign": build_rank(foreign_df),
         "invest": build_rank(invest_df),
+        "message": ""
     }

@@ -2,7 +2,7 @@ const API_BASE = "https://stock-project-bnio.onrender.com";
 
 const state = {
   stocks: { trend: [], setup: [], reversal: [] },
-  funds: { foreign: [], invest: [] },
+  funds: { foreign: [], invest: [], message: "" },
   currentView: "dashboard",
   search: "",
   sort: "stock-asc",
@@ -49,7 +49,7 @@ async function loadAll() {
     if (fundsRes && fundsRes.ok) {
       state.funds = await fundsRes.json();
     } else {
-      state.funds = { foreign: [], invest: [] };
+      state.funds = { foreign: [], invest: [], message: "法人 API 讀取失敗" };
     }
 
     updateSummary();
@@ -60,7 +60,7 @@ async function loadAll() {
   } catch (err) {
     console.error(err);
     setStatus(false, "API 連線失敗");
-    alert("資料讀取失敗，請檢查 API_BASE 是否正確，或 Render 是否還在喚醒中。");
+    alert("資料讀取失敗，請檢查 API_BASE 是否正確，或 Render 是否仍在喚醒中。");
   }
 }
 
@@ -106,7 +106,7 @@ function renderMiniList(selector, rows) {
 
   el.innerHTML = list.map((row) => `
     <div class="mini-item">
-      <strong>${row.Stock || row.stock_id || "-"}</strong>
+      <strong>${row.StockID || row.Stock || row.stock_id || "-"} ${row.Name || ""}</strong>
       <span>價格：${safeNum(row.Close || row.close)}　成交量：${safeNum(row.Volume || row.volume)}</span>
     </div>
   `).join("");
@@ -143,8 +143,14 @@ function renderCurrentView() {
     const foreign = processFundRows(state.funds.foreign);
     const invest = processFundRows(state.funds.invest);
     $("#resultBadge").textContent = `${foreign.length + invest.length} 筆`;
-    $("#tableForeign").innerHTML = createFundTable(foreign, "外資");
-    $("#tableInvest").innerHTML = createFundTable(invest, "投信");
+
+    if (state.funds.message && foreign.length === 0 && invest.length === 0) {
+      $("#tableForeign").innerHTML = `<div class="empty-state">${state.funds.message}</div>`;
+      $("#tableInvest").innerHTML = `<div class="empty-state">${state.funds.message}</div>`;
+    } else {
+      $("#tableForeign").innerHTML = createFundTable(foreign, "外資");
+      $("#tableInvest").innerHTML = createFundTable(invest, "投信");
+    }
   } else {
     const total =
       (state.stocks.trend?.length || 0) +
@@ -160,13 +166,13 @@ function processRows(rows) {
 
   if (state.search) {
     result = result.filter((row) =>
-      String(row.Stock || row.stock_id || "").toUpperCase().includes(state.search)
+      String(row.Stock || row.StockID || row.stock_id || "").toUpperCase().includes(state.search)
     );
   }
 
   result.sort((a, b) => {
-    const stockA = String(a.Stock || a.stock_id || "");
-    const stockB = String(b.Stock || b.stock_id || "");
+    const stockA = String(a.StockID || a.Stock || a.stock_id || "");
+    const stockB = String(b.StockID || b.Stock || b.stock_id || "");
     const closeA = Number(a.Close || a.close || 0);
     const closeB = Number(b.Close || b.close || 0);
     const volA = Number(a.Volume || a.volume || 0);
@@ -225,6 +231,7 @@ function createStockTable(rows, type) {
         <thead>
           <tr>
             <th>股票代碼</th>
+            <th>名稱</th>
             <th>分類</th>
             <th>收盤價</th>
             <th>成交量</th>
@@ -233,7 +240,8 @@ function createStockTable(rows, type) {
         <tbody>
           ${rows.map((row) => `
             <tr>
-              <td>${row.Stock || row.stock_id || "-"}</td>
+              <td>${row.StockID || row.Stock || row.stock_id || "-"}</td>
+              <td>${row.Name || "-"}</td>
               <td><span class="pill ${pillClass}">${pillText}</span></td>
               <td>${safeNum(row.Close || row.close)}</td>
               <td>${safeNum(row.Volume || row.volume)}</td>
@@ -247,7 +255,7 @@ function createStockTable(rows, type) {
 
 function createFundTable(rows, label) {
   if (!rows.length) {
-    return '<div class="empty-state">目前沒有法人資料，請先完成 /api/funds</div>';
+    return '<div class="empty-state">目前沒有法人資料</div>';
   }
 
   return `

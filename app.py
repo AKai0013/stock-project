@@ -1,7 +1,7 @@
 from flask import Flask, jsonify
 from flask_cors import CORS
 import pandas as pd
-from funds import get_funds_rank, get_funds_debug
+from funds import get_funds_rank
 
 app = Flask(__name__)
 CORS(app)
@@ -31,11 +31,6 @@ def stocks():
 @app.route("/api/funds")
 def funds():
     return jsonify(get_funds_rank(top_n=20))
-
-
-@app.route("/api/funds/debug")
-def funds_debug():
-    return jsonify(get_funds_debug())
 
 
 if __name__ == "__main__":
