@@ -18,39 +18,84 @@ def ensure_data_dir():
 
 def get_twse_stock_list():
     url = "https://isin.twse.com.tw/isin/C_public.jsp?strMode=2"
-
     headers = {
         "User-Agent": "Mozilla/5.0"
     }
 
-    # 先自己抓，再指定編碼
     resp = requests.get(url, headers=headers, timeout=30)
     resp.raise_for_status()
-
-    # 證交所這頁常見是 big5 系列
     resp.encoding = "big5"
 
     html_text = resp.text
     tables = pd.read_html(StringIO(html_text), flavor="lxml")
 
-    df = tables[0]
+    if not tables:
+        raise ValueError("讀不到 TWSE 表格")
+
+    df = tables[0].copy()
+
+    # 先用第一列當欄名
     df.columns = df.iloc[0]
     df = df[1:].copy()
 
-    df = df[df["有價證券別"] == "股票"].copy()
+    # 清理欄名
+    df.columns = [str(c).strip() for c in df.columns]
 
-    split_col = df["有價證券代號及名稱"].astype(str).str.split("　", n=1, expand=True)
+    print("TWSE columns:", df.columns.tolist())
 
+    # 嘗試找「證券類別」欄
+    security_type_col = None
+    for col in df.columns:
+        if "有價證券別" in col:
+            security_type_col = col
+            break
+
+    # 嘗試找「代號及名稱」欄
+    code_name_col = None
+    for col in df.columns:
+        if "有價證券代號及名稱" in col:
+            code_name_col = col
+            break
+
+    # 如果沒找到，列印資訊方便 debug
+    if security_type_col is None:
+        print("找不到『有價證券別』欄位，直接列出前幾列資料：")
+        print(df.head(5).to_dict(orient="records"))
+        # 有些情況整張表已經只剩股票，先不強制過濾
+    else:
+        df = df[df[security_type_col].astype(str).str.contains("股票", na=False)].copy()
+
+    if code_name_col is None:
+        raise ValueError(f"找不到『有價證券代號及名稱』欄位，現有欄位: {df.columns.tolist()}")
+
+    # 拆股票代碼與名稱
+    raw_series = df[code_name_col].astype(str).str.strip()
+
+    # 先試全形空白
+    split_col = raw_series.str.split("　", n=1, expand=True)
+
+    # 若失敗再試一般空白
     if split_col.shape[1] < 2:
-        split_col = df["有價證券代號及名稱"].astype(str).str.split(" ", n=1, expand=True)
+        split_col = raw_series.str.split(" ", n=1, expand=True)
 
     df["stock_id"] = split_col[0].astype(str).str.strip()
-    df["stock_name"] = split_col[1].astype(str).str.strip() if split_col.shape[1] > 1 else ""
 
+    if split_col.shape[1] > 1:
+        df["stock_name"] = split_col[1].astype(str).str.strip()
+    else:
+        df["stock_name"] = ""
+
+    # 只保留四碼股票
     df = df[df["stock_id"].str.match(r"^\d{4}$", na=False)].copy()
+
     df["yf_symbol"] = df["stock_id"] + ".TW"
 
-    return df[["stock_id", "stock_name", "yf_symbol"]].drop_duplicates().reset_index(drop=True)
+    result = df[["stock_id", "stock_name", "yf_symbol"]].drop_duplicates().reset_index(drop=True)
+
+    print("抓到股票數量:", len(result))
+    print(result.head(10).to_dict(orient="records"))
+
+    return result
 
 
 def download_stock_data(symbol: str, period: str = "6mo"):
@@ -106,11 +151,9 @@ def classify_stock(df: pd.DataFrame):
     if None in [ma5, ma10, ma20, vol_ma5, vol_ma20]:
         return None
 
-    # 趨勢穩健
     if close > ma5 > ma10 > ma20 and volume >= vol_ma20 * 0.9:
         return "trend"
 
-    # 蓄勢待發
     recent_high = recent_10["High"].max()
     recent_low = recent_10["Low"].min()
     volatility_ratio = (recent_high - recent_low) / close if close > 0 else 999
@@ -120,7 +163,6 @@ def classify_stock(df: pd.DataFrame):
     if near_ma20 and volatility_ratio < 0.08 and volume_expand:
         return "setup"
 
-    # 反轉雷達
     prev_close = float(prev["Close"])
     prev_ma20 = float(prev["MA20"]) if pd.notna(prev["MA20"]) else None
     if prev_ma20 is not None:
