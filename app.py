@@ -6,15 +6,19 @@ from funds import get_funds_rank
 app = Flask(__name__)
 CORS(app)
 
+
 def load(file):
     try:
         return pd.read_csv(file).to_dict("records")
-    except:
+    except Exception as e:
+        print("CSV load failed:", file, e)
         return []
+
 
 @app.route("/")
 def home():
     return "API is running"
+
 
 @app.route("/api/stocks")
 def stocks():
@@ -24,9 +28,12 @@ def stocks():
         "reversal": load("data/reversal.csv")
     })
 
+
 @app.route("/api/funds")
 def funds():
-    return jsonify(get_funds_rank(days=1, top_n=20))
+    data = get_funds_rank(days=3, top_n=20)
+    return jsonify(data)
+
 
 if __name__ == "__main__":
     app.run()
