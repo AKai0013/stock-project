@@ -5,3 +5,5 @@ yfinance
 FinMind
 gunicorn
 tqdm
+lxml
+html5lib
