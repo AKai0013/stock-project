@@ -10,8 +10,7 @@ CORS(app)
 def load(file):
     try:
         return pd.read_csv(file).to_dict("records")
-    except Exception as e:
-        print("CSV load failed:", file, e)
+    except:
         return []
 
 
@@ -31,8 +30,7 @@ def stocks():
 
 @app.route("/api/funds")
 def funds():
-    data = get_funds_rank(days=3, top_n=20)
-    return jsonify(data)
+    return jsonify(get_funds_rank(days=3, top_n=20))
 
 
 if __name__ == "__main__":

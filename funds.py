@@ -36,9 +36,13 @@ def get_api():
         return None
 
 
-def get_latest_trading_day_df(api, lookback_days=10):
+def get_funds_rank(days=3, top_n=20):
+    api = get_api()
+    if api is None:
+        return {"foreign": [], "invest": []}
+
     end_date = datetime.today().date()
-    start_date = end_date - timedelta(days=lookback_days)
+    start_date = end_date - timedelta(days=10)
 
     try:
         df = api.taiwan_stock_institutional_investors(
@@ -47,125 +51,49 @@ def get_latest_trading_day_df(api, lookback_days=10):
         )
     except Exception as e:
         print("FinMind fetch failed:", e)
-        return None
+        return {"foreign": [], "invest": []}
 
     if df is None or df.empty:
-        print("NO DATA FROM FINMIND")
-        return None
+        return {"foreign": [], "invest": []}
 
-    print("FUNDS COLUMNS:", df.columns.tolist())
-
-    if "date" not in df.columns or "stock_id" not in df.columns or "name" not in df.columns:
-        print("Missing required columns")
-        return None
-
-    df = df.copy()
-    df["date"] = pd.to_datetime(df["date"], errors="coerce")
-    df = df.dropna(subset=["date"])
-
-    if df.empty:
-        return None
-
+    # 👉 轉時間
+    df["date"] = pd.to_datetime(df["date"])
     latest_date = df["date"].max()
-    print("LATEST DATE:", latest_date)
 
+    # 👉 只抓最新一天
     df = df[df["date"] == latest_date].copy()
-    return df
 
-
-def pick_buy_sell_column(df):
-    candidates = [
-        "buy_sell",
-        "buy_sell_difference",
-        "buy_sell_diff",
-        "net_buy_sell",
-    ]
-    for col in candidates:
-        if col in df.columns:
-            return col
-
-    # 保底：找欄位名含 buy 的
+    # 👉 找買賣超欄位
+    buy_col = None
     for col in df.columns:
-        if "buy" in str(col).lower():
-            return col
-
-    return None
-
-
-def filter_foreign(df):
-    # 盡量包更多可能名稱
-    keys = [
-        "foreign",
-        "foreign investor",
-        "foreign_investor",
-        "foreign dealer",
-        "foreign_dealer",
-    ]
-
-    mask = pd.Series(False, index=df.index)
-    for k in keys:
-        mask = mask | df["name"].astype(str).str.contains(k, case=False, na=False)
-
-    return df[mask].copy()
-
-
-def filter_invest(df):
-    keys = [
-        "investment",
-        "investment trust",
-        "investment_trust",
-    ]
-
-    mask = pd.Series(False, index=df.index)
-    for k in keys:
-        mask = mask | df["name"].astype(str).str.contains(k, case=False, na=False)
-
-    return df[mask].copy()
-
-
-def build_rank(df, buy_col, top_n=20):
-    if df is None or df.empty or buy_col is None:
-        return []
-
-    rank = (
-        df.groupby("stock_id", as_index=False)[buy_col]
-        .sum()
-        .sort_values(buy_col, ascending=False)
-        .head(top_n)
-        .reset_index(drop=True)
-    )
-
-    result = []
-    for _, row in rank.iterrows():
-        result.append({
-            "stock_id": str(row["stock_id"]),
-            "buy_sell": int(row[buy_col]) if pd.notna(row[buy_col]) else 0
-        })
-    return result
-
-
-def get_funds_rank(days=3, top_n=20):
-    api = get_api()
-    if api is None:
-        return {"foreign": [], "invest": []}
-
-    df = get_latest_trading_day_df(api, lookback_days=10)
-    if df is None or df.empty:
-        return {"foreign": [], "invest": []}
-
-    buy_col = pick_buy_sell_column(df)
-    print("BUY COL:", buy_col)
+        if "buy" in col.lower():
+            buy_col = col
 
     if buy_col is None:
+        print("找不到買賣超欄位")
         return {"foreign": [], "invest": []}
 
-    foreign_df = filter_foreign(df)
-    invest_df = filter_invest(df)
+    # 🔥🔥🔥 關鍵：用中文抓法人
+    foreign_df = df[df["name"].astype(str).str.contains("外資|陸資", na=False)]
+    invest_df = df[df["name"].astype(str).str.contains("投信", na=False)]
 
-    print("FOREIGN ROWS:", len(foreign_df))
-    print("INVEST ROWS:", len(invest_df))
+    def build_rank(d):
+        if d.empty:
+            return []
+
+        r = (
+            d.groupby("stock_id")[buy_col]
+            .sum()
+            .sort_values(ascending=False)
+            .head(top_n)
+        )
+
+        return [
+            {"stock_id": i, "buy_sell": int(v)}
+            for i, v in r.items()
+        ]
 
     return {
-        "foreign": build_rank(foreign_df, buy_col, top_n=top_n),
-        "invest": build_rank(invest_df, buy_col, top_n=top_n),
+        "foreign": build_rank(foreign_df),
+        "invest": build_rank(invest_df),
     }
