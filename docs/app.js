@@ -4,7 +4,7 @@ const state = {
   stocks: { trend: [], setup: [], reversal: [] },
   funds: { foreign: [], invest: [], message: "" },
   strong: { strong: [], message: "" },
-  top10: { top10: [], message: "" },
+  top10: { top10: [], stock_top10: [], etf_top10: [], message: "" },
   currentView: "dashboard",
   search: "",
   sort: "stock-asc",
@@ -65,7 +65,7 @@ async function loadAll() {
     if (top10Res && top10Res.ok) {
       state.top10 = await top10Res.json();
     } else {
-      state.top10 = { top10: [], message: "最強10檔 API 讀取失敗" };
+      state.top10 = { top10: [], stock_top10: [], etf_top10: [], message: "最強10檔 API 讀取失敗" };
     }
 
     updateSummary();
@@ -216,19 +216,8 @@ function renderCurrentView() {
       $("#tableStrong").innerHTML = createStrongTable(rows);
     }
   } else if (state.currentView === "top10") {
-    const rows = processTop10Rows(state.top10.top10 || []);
-    $("#resultBadge").textContent = `${rows.length} 筆`;
-
-    if (state.top10.message && rows.length === 0) {
-      $("#tableTop10").innerHTML = `
-        <div class="notice-card">
-          <div class="notice-title">最強10檔資料目前不可用</div>
-          <div class="notice-text">${state.top10.message}</div>
-        </div>
-      `;
-    } else {
-      $("#tableTop10").innerHTML = createTop10Table(rows);
-    }
+    $("#resultBadge").textContent = `${(state.top10.top10 || []).length} 筆`;
+    $("#tableTop10").innerHTML = createTop10Section();
   } else {
     const total =
       (state.stocks.trend?.length || 0) +
@@ -431,6 +420,40 @@ function createStrongTable(rows) {
   `;
 }
 
+function createTop10Section() {
+  const top10 = processTop10Rows(state.top10.top10 || []);
+  const stockTop10 = processTop10Rows(state.top10.stock_top10 || []);
+  const etfTop10 = processTop10Rows(state.top10.etf_top10 || []);
+
+  return `
+    <div class="content-grid">
+      <div class="card">
+        <div class="card-header">
+          <h2>全市場 TOP 10</h2>
+          <p>股票與 ETF 綜合評分</p>
+        </div>
+        ${createTop10Table(top10)}
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <h2>股票 TOP 10</h2>
+          <p>排除 ETF 後的強勢排行</p>
+        </div>
+        ${createTop10Table(stockTop10)}
+      </div>
+    </div>
+
+    <div class="card mt16">
+      <div class="card-header">
+        <h2>ETF TOP 10</h2>
+        <p>ETF 單獨排名</p>
+      </div>
+      ${createTop10Table(etfTop10)}
+    </div>
+  `;
+}
+
 function createTop10Table(rows) {
   if (!rows.length) {
     return '<div class="empty-state">目前沒有最強10檔資料</div>';
@@ -447,6 +470,8 @@ function createTop10Table(rows) {
             <th>分類</th>
             <th>分數</th>
             <th>漲跌幅</th>
+            <th>RSI</th>
+            <th>近20高點</th>
             <th>外資</th>
             <th>投信</th>
           </tr>
@@ -456,10 +481,12 @@ function createTop10Table(rows) {
             <tr>
               <td>#${index + 1}</td>
               <td>${row.StockID || "-"}</td>
-              <td>${row.Name || "-"}</td>
-              <td>${row.category || "-"}</td>
+              <td>${row.Name || "-"} ${toBool(row.IsETF) ? '<span class="pill pill-setup">ETF</span>' : ''}</td>
+              <td>${categoryLabel(row.category)}</td>
               <td>${safeNum(row.score)}</td>
               <td class="${getChangeClass(row.ChangePct)}">${formatSigned(row.ChangePct)}%</td>
+              <td>${safeNum(row.RSI14)}</td>
+              <td>${safeNum(row.NearHigh20Pct)}%</td>
               <td>${row.hasForeign ? "✓" : "-"}</td>
               <td>${row.hasInvest ? "✓" : "-"}</td>
             </tr>
@@ -468,6 +495,17 @@ function createTop10Table(rows) {
       </table>
     </div>
   `;
+}
+
+function categoryLabel(category) {
+  if (category === "trend") return '<span class="pill pill-trend">趨勢穩健</span>';
+  if (category === "setup") return '<span class="pill pill-setup">蓄勢待發</span>';
+  if (category === "reversal") return '<span class="pill pill-reversal">反轉雷達</span>';
+  return "-";
+}
+
+function toBool(v) {
+  return String(v).toLowerCase() === "true" || String(v) === "1";
 }
 
 function getChangeClass(v) {

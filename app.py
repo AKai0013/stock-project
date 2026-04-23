@@ -86,6 +86,8 @@ def strong():
                     "Stock": row.get("Stock", ""),
                     "StockID": stock_id,
                     "Name": row.get("Name", ""),
+                    "AssetType": row.get("AssetType", ""),
+                    "IsETF": bool(row.get("IsETF", False)),
                     "Close": row.get("Close", ""),
                     "Change": row.get("Change", ""),
                     "ChangePct": row.get("ChangePct", ""),
@@ -122,57 +124,107 @@ def top10():
 
         all_rows = []
 
+        def to_float(v, default=0):
+            try:
+                if v is None or v == "":
+                    return default
+                return float(v)
+            except Exception:
+                return default
+
         def score_stock(row, category):
+            stock_id = str(row.get("StockID", ""))
+            is_etf = str(row.get("IsETF", "False")).lower() in ["true", "1", "yes"]
+
+            change_pct = to_float(row.get("ChangePct", 0))
+            volume = to_float(row.get("Volume", 0))
+            rsi = to_float(row.get("RSI14", 50))
+            near_high20 = to_float(row.get("NearHigh20Pct", 0))
+            near_high120 = to_float(row.get("NearHigh120Pct", 0))
+
             score = 0.0
 
-            change_pct = float(row.get("ChangePct", 0) or 0)
-            volume = float(row.get("Volume", 0) or 0)
-            stock_id = str(row.get("StockID", ""))
-
+            # 1. 類別基礎分
             if category == "trend":
                 score += 40
             elif category == "setup":
-                score += 28
+                score += 26
             elif category == "reversal":
-                score += 20
+                score += 18
 
-            score += change_pct * 2.2
-            score += min(volume / 100000, 20)
+            # 2. 漲幅分
+            if change_pct > 0:
+                score += min(change_pct * 2.5, 20)
+            else:
+                score += max(change_pct * 1.2, -10)
 
-            if stock_id in foreign_ids:
-                score += 12
-            if stock_id in invest_ids:
+            # 3. 量能分
+            if volume >= 3000000:
+                score += 18
+            elif volume >= 1500000:
+                score += 14
+            elif volume >= 800000:
                 score += 10
+            elif volume >= 300000:
+                score += 6
+            else:
+                score += 0
 
+            # 4. 接近高點強度
+            if near_high20 >= 99:
+                score += 14
+            elif near_high20 >= 97:
+                score += 10
+            elif near_high20 >= 95:
+                score += 6
+
+            if near_high120 >= 90:
+                score += 10
+            elif near_high120 >= 85:
+                score += 6
+
+            # 5. RSI 強度
+            if 55 <= rsi <= 72:
+                score += 10
+            elif 50 <= rsi < 55:
+                score += 5
+            elif rsi > 80:
+                score -= 4
+
+            # 6. 法人加分
+            if stock_id in foreign_ids:
+                score += 10
+            if stock_id in invest_ids:
+                score += 8
+
+            # 7. ETF 調整
+            # ETF波動通常較穩，適度扣一點，避免全部被ETF吃榜
+            if is_etf:
+                score -= 4
+
+            # 8. 弱勢股扣分
             if change_pct < -3:
                 score -= 8
 
             return round(score, 2)
 
-        for row in trend:
-            item = dict(row)
-            item["score"] = score_stock(item, "trend")
-            item["category"] = "trend"
-            item["hasForeign"] = str(item.get("StockID", "")) in foreign_ids
-            item["hasInvest"] = str(item.get("StockID", "")) in invest_ids
-            all_rows.append(item)
+        def add_rows(rows, category):
+            for row in rows:
+                item = dict(row)
+                stock_id = str(item.get("StockID", ""))
 
-        for row in setup:
-            item = dict(row)
-            item["score"] = score_stock(item, "setup")
-            item["category"] = "setup"
-            item["hasForeign"] = str(item.get("StockID", "")) in foreign_ids
-            item["hasInvest"] = str(item.get("StockID", "")) in invest_ids
-            all_rows.append(item)
+                item["category"] = category
+                item["hasForeign"] = stock_id in foreign_ids
+                item["hasInvest"] = stock_id in invest_ids
+                item["score"] = score_stock(item, category)
 
-        for row in reversal:
-            item = dict(row)
-            item["score"] = score_stock(item, "reversal")
-            item["category"] = "reversal"
-            item["hasForeign"] = str(item.get("StockID", "")) in foreign_ids
-            item["hasInvest"] = str(item.get("StockID", "")) in invest_ids
-            all_rows.append(item)
+                all_rows.append(item)
 
+        add_rows(trend, "trend")
+        add_rows(setup, "setup")
+        add_rows(reversal, "reversal")
+
+        # 同一檔只留最高分
         best_map = {}
         for row in all_rows:
             stock_id = str(row.get("StockID", ""))
@@ -182,8 +234,13 @@ def top10():
         final_rows = list(best_map.values())
         final_rows.sort(key=lambda x: x["score"], reverse=True)
 
+        stock_top10 = [x for x in final_rows if str(x.get("IsETF", "False")).lower() not in ["true", "1", "yes"]][:10]
+        etf_top10 = [x for x in final_rows if str(x.get("IsETF", "False")).lower() in ["true", "1", "yes"]][:10]
+
         return jsonify({
             "top10": final_rows[:10],
+            "stock_top10": stock_top10,
+            "etf_top10": etf_top10,
             "message": meta.get("message", "")
         })
 
@@ -191,6 +248,8 @@ def top10():
         print("Top10 API failed:", e)
         return jsonify({
             "top10": [],
+            "stock_top10": [],
+            "etf_top10": [],
             "message": f"最強10檔 API 錯誤：{str(e)}"
         }), 200
 

@@ -9,12 +9,12 @@ import yfinance as yf
 
 DATA_DIR = "data"
 
-# 全掃就設 None；怕太慢可以先設 600
+# 全掃就設 None；怕太慢先設 600
 MAX_STOCKS = None
 
 SLEEP_SECONDS = 0.08
 MIN_PRICE = 20
-MIN_AVG_VOLUME = 300000   # 平均成交量太小的先過濾
+MIN_AVG_VOLUME = 300000
 PERIOD = "1y"
 
 
@@ -68,9 +68,10 @@ def get_twse_stock_list():
     df = df[df["stock_id"].str.match(r"^\d{4,5}$", na=False)].copy()
 
     df["asset_type"] = df[type_col].astype(str).str.strip() if type_col is not None else "未知"
+    df["is_etf"] = df["asset_type"].astype(str).str.contains("ETF", na=False)
     df["yf_symbol"] = df["stock_id"] + ".TW"
 
-    result = df[["stock_id", "stock_name", "asset_type", "yf_symbol"]].drop_duplicates().reset_index(drop=True)
+    result = df[["stock_id", "stock_name", "asset_type", "is_etf", "yf_symbol"]].drop_duplicates().reset_index(drop=True)
 
     print("抓到股票+ETF數量:", len(result))
     return result
@@ -135,7 +136,6 @@ def download_stock_data(symbol):
 
 def calc_rsi(series, period=14):
     delta = series.diff()
-
     gain = delta.clip(lower=0)
     loss = -delta.clip(upper=0)
 
@@ -161,14 +161,15 @@ def add_indicators(df):
     df["HIGH120"] = df["High"].rolling(120).max()
 
     df["LOW20"] = df["Low"].rolling(20).min()
-    df["RSI14"] = calc_rsi(df["Close"], 14)
+    df["LOW60"] = df["Low"].rolling(60).min()
 
+    df["RSI14"] = calc_rsi(df["Close"], 14)
     df["ChangePct"] = df["Close"].pct_change() * 100
 
     return df
 
 
-def passes_basic_filters(df, asset_type):
+def passes_basic_filters(df, is_etf):
     last = df.iloc[-1]
 
     close = float(last["Close"])
@@ -177,15 +178,14 @@ def passes_basic_filters(df, asset_type):
     if close < MIN_PRICE:
         return False
 
-    # ETF 可稍微放寬量能，股票嚴格一點
-    min_vol = 200000 if "ETF" in str(asset_type) else MIN_AVG_VOLUME
+    min_vol = 200000 if is_etf else MIN_AVG_VOLUME
     if vol20 < min_vol:
         return False
 
     return True
 
 
-def classify(df, asset_type):
+def classify(df, is_etf):
     if len(df) < 130:
         return None
 
@@ -210,11 +210,9 @@ def classify(df, asset_type):
     if None in [ma20, ma60, ma120, vol20, high20, high120, low20, rsi]:
         return None
 
-    if not passes_basic_filters(df, asset_type):
+    if not passes_basic_filters(df, is_etf):
         return None
 
-    # === 趨勢穩健 ===
-    # 中期多頭 + 接近高點 + 量能支持
     if (
         close > ma20 > ma60 > ma120 and
         close >= high20 * 0.98 and
@@ -224,8 +222,6 @@ def classify(df, asset_type):
     ):
         return "trend"
 
-    # === 蓄勢待發 ===
-    # 中期偏多、箱體收斂、接近突破
     range_20 = (high20 - low20) / close if close > 0 else 999
     if (
         close > ma60 and
@@ -238,8 +234,6 @@ def classify(df, asset_type):
     ):
         return "setup"
 
-    # === 反轉雷達 ===
-    # 昨天還在 MA20 下，今天強勢站回 + 放量
     if (
         prev_ma20 is not None and
         prev_close < prev_ma20 and
@@ -253,7 +247,7 @@ def classify(df, asset_type):
     return None
 
 
-def make_row(stock_id, name, asset_type, symbol, df):
+def make_row(stock_id, name, asset_type, is_etf, symbol, df):
     last = df.iloc[-1]
     prev = df.iloc[-2]
 
@@ -262,11 +256,16 @@ def make_row(stock_id, name, asset_type, symbol, df):
     change = close - prev_close
     pct = (change / prev_close * 100) if prev_close != 0 else 0
 
+    high20 = float(last["HIGH20"]) if pd.notna(last["HIGH20"]) else close
+    high120 = float(last["HIGH120"]) if pd.notna(last["HIGH120"]) else close
+    vol20 = float(last["VOL20"]) if pd.notna(last["VOL20"]) else 0
+
     return {
         "Stock": symbol,
         "StockID": stock_id,
         "Name": name,
         "AssetType": asset_type,
+        "IsETF": bool(is_etf),
         "Close": round(close, 2),
         "Change": round(change, 2),
         "ChangePct": round(pct, 2),
@@ -275,6 +274,11 @@ def make_row(stock_id, name, asset_type, symbol, df):
         "MA60": round(float(last["MA60"]), 2) if pd.notna(last["MA60"]) else None,
         "MA120": round(float(last["MA120"]), 2) if pd.notna(last["MA120"]) else None,
         "RSI14": round(float(last["RSI14"]), 2) if pd.notna(last["RSI14"]) else None,
+        "High20": round(high20, 2),
+        "High120": round(high120, 2),
+        "Vol20": round(vol20, 2),
+        "NearHigh20Pct": round((close / high20) * 100, 2) if high20 > 0 else None,
+        "NearHigh120Pct": round((close / high120) * 100, 2) if high120 > 0 else None,
     }
 
 
@@ -301,6 +305,7 @@ def run():
         stock_id = row["stock_id"]
         stock_name = row["stock_name"]
         asset_type = row["asset_type"]
+        is_etf = bool(row["is_etf"])
         symbol = row["yf_symbol"]
 
         print(f"[{i+1}/{total}] {stock_id} {stock_name} ({asset_type})")
@@ -310,10 +315,10 @@ def run():
             continue
 
         df = add_indicators(df)
-        category = classify(df, asset_type)
+        category = classify(df, is_etf)
 
         if category:
-            result = make_row(stock_id, stock_name, asset_type, symbol, df)
+            result = make_row(stock_id, stock_name, asset_type, is_etf, symbol, df)
 
             if category == "trend":
                 trend.append(result)
